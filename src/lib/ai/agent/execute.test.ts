@@ -575,7 +575,7 @@ describe('executeClinicalTool', () => {
     expect(activeNames).toEqual(['lead:interesado'])
   })
 
-  it('escalar_a_humano apaga el auto-reply y marca escalated', async () => {
+  it('escalar_a_humano notifica al equipo SIN tocar el modo IA y marca escalated', async () => {
     const db = fakeDb({
       conversations: [{ id: CONV, account_id: ACCOUNT, ai_autoreply_disabled: false }],
     })
@@ -585,7 +585,9 @@ describe('executeClinicalTool', () => {
       ctxWith(db),
     )
     expect(res.escalated).toBe(true)
-    expect(db.store.conversations[0].ai_autoreply_disabled).toBe(true)
+    // Decisión de producto: el modo IA↔humano solo cambia a mano desde
+    // el panel — escalar avisa, no apaga.
+    expect(db.store.conversations[0].ai_autoreply_disabled).toBe(false)
     expect(db.store.notifications[0].type).toBe('ai_escalation')
   })
 

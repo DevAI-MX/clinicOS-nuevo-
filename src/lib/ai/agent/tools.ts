@@ -88,7 +88,7 @@ export interface RunClinicalAgentResult {
   text: string
   /** El modelo pidió handoff por centinela (sin texto útil). */
   handoff: boolean
-  /** Se ejecutó escalar_a_humano: el auto-reply ya quedó apagado. */
+  /** Se ejecutó escalar_a_humano: el equipo fue notificado (el modo IA no cambia). */
   escalated: boolean
 }
 
@@ -377,7 +377,7 @@ export const CLINICAL_TOOLS = [
   {
     name: 'escalar_a_humano',
     description:
-      'Pasa la conversación a una persona del equipo y DEJA de responder automáticamente. Úsala cuando un lead pide hablar con el doctor, el tema sale de tu alcance (facturación, legal, reembolsos), hay una queja, o ante cualquier duda que no puedas resolver con las herramientas. Regla: ante la duda, escala. Tras usarla, despídete con una línea breve diciendo que en un momento le contacta el equipo.',
+      'Avisa al equipo para que una persona tome la conversación. Úsala cuando un lead pide hablar con el doctor, el tema sale de tu alcance (facturación, legal, reembolsos), hay una queja, o ante cualquier duda que no puedas resolver con las herramientas. Regla: ante la duda, escala. Tras usarla, despídete con una línea breve diciendo que en un momento le contacta el equipo y NO sigas resolviendo ese tema tú.',
     input_schema: {
       type: 'object',
       properties: {

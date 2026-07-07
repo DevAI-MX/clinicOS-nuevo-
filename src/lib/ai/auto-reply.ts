@@ -46,12 +46,19 @@ interface DispatchArgs {
  * runner's contract: it owns its try/catch and NEVER throws — a failing
  * or slow LLM call must not affect the webhook's 200 to Meta.
  *
- * Eligibility gates (any → silent no-op):
+ * Eligibility gates (any → no reply; the notable ones notify the team):
  *   - AI off / auto-reply disabled for the account
  *   - a human agent is assigned (they own the thread)
- *   - auto-reply was disabled for this conversation (prior handoff)
+ *   - modo humano activado A MANO en el panel (ai_autoreply_disabled)
  *   - the per-conversation reply cap is reached
  *   - there's nothing to reply to
+ *
+ * Decisión de producto (2026-07-07): el modo IA↔humano NUNCA se cambia
+ * automáticamente. Antes el tope y el handoff apagaban
+ * ai_autoreply_disabled y el hilo quedaba mudo sin señal en la UI (el
+ * doctor asumía que el agente estaba roto). Ahora el único escritor de
+ * ese flag es el interruptor del panel; estos caminos solo avisan al
+ * equipo (notifyTeamOnce, con candado anti-spam por hora).
  *
  * The 24h WhatsApp session window is inherently open here — we're
  * reacting to a customer message that just landed — so no separate
@@ -110,15 +117,15 @@ export async function dispatchInboundToAiReply(
     if (replyCap > 0 && conv.ai_reply_count >= replyCap) {
       // Tope alcanzado: NUNCA fantasmear al paciente en silencio
       // (incidente Acerotech: el bot enmudeció justo cuando el lead
-      // aceptó la cita). Se apaga el auto-reply y se avisa al equipo
-      // UNA vez para que una persona tome el hilo.
-      await retireConversationToHumans(db, {
+      // aceptó la cita). El modo IA no se toca — solo se avisa al
+      // equipo (máx. uno por hora) para que responda o suba el tope.
+      await notifyTeamOnce(db, {
         accountId,
         conversationId,
         contactId,
         configOwnerUserId,
         title: 'El agente llegó a su tope de respuestas',
-        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación. El hilo queda en manos del equipo — respóndele tú.',
+        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación y dejará de contestar aquí. Respóndele tú o ajusta el tope en la configuración de IA.',
       })
       return
     }
@@ -238,18 +245,18 @@ export async function dispatchInboundToAiReply(
     }
 
     if (handoff || !text) {
-      // The model can't (or shouldn't) answer — stop auto-replying on
-      // this thread and leave the inbound unanswered so it surfaces in
-      // the inbox for a human. Sticky until an admin re-enables. El
-      // equipo recibe UN aviso: sin notificación, el paciente quedaba
-      // esperando sin que nadie supiera que el hilo era suyo.
-      await retireConversationToHumans(db, {
+      // The model can't (or shouldn't) answer — this inbound stays
+      // unanswered and the team gets a notice (sin notificación, el
+      // paciente quedaba esperando sin que nadie supiera que el hilo
+      // era suyo). El modo IA queda intacto: el siguiente mensaje
+      // vuelve a intentarse en automático.
+      await notifyTeamOnce(db, {
         accountId,
         conversationId,
         contactId,
         configOwnerUserId,
         title: 'El agente pasó una conversación al equipo',
-        body: 'escribió algo que el agente prefirió no responder en automático. El hilo queda en manos del equipo — respóndele tú.',
+        body: 'escribió algo que el agente prefirió no responder en automático. Respóndele tú desde el panel.',
       })
       return
     }
@@ -287,14 +294,14 @@ export async function dispatchInboundToAiReply(
     if (claimErr) return
     if (claimed !== true) {
       // Un inbound concurrente tomó el último slot: mismo tratamiento
-      // que el tope — el hilo pasa al equipo con aviso, nunca silencio.
-      await retireConversationToHumans(db, {
+      // que el tope — aviso al equipo, nunca silencio, modo IA intacto.
+      await notifyTeamOnce(db, {
         accountId,
         conversationId,
         contactId,
         configOwnerUserId,
         title: 'El agente llegó a su tope de respuestas',
-        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación. El hilo queda en manos del equipo — respóndele tú.',
+        body: 'sigue escribiendo, pero el agente alcanzó el máximo de respuestas automáticas de esta conversación y dejará de contestar aquí. Respóndele tú o ajusta el tope en la configuración de IA.',
       })
       return
     }
@@ -307,11 +314,13 @@ export async function dispatchInboundToAiReply(
       // lección Acerotech aplicada a la capa de transporte: nunca
       // silencio — el equipo recibe un aviso para tomar el hilo.
       console.error('[ai auto-reply] outbound send failed:', sendErr)
-      await notifySendFailureOnce(db, {
+      await notifyTeamOnce(db, {
         accountId,
         conversationId,
         contactId,
         configOwnerUserId,
+        title: 'No se pudo enviar la respuesta del agente',
+        body: 'escribió y el agente generó su respuesta, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.',
       })
       return
     }
@@ -399,73 +408,25 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-interface RetireArgs {
+interface NotifyArgs {
   accountId: string
   conversationId: string
   contactId: string
   configOwnerUserId: string
+  /** También es la llave del candado anti-spam. */
   title: string
   /** Se antepone el nombre del contacto: "<nombre> <body>". */
   body: string
 }
 
 /**
- * Apaga el auto-reply de la conversación y avisa al equipo UNA vez.
- * El UPDATE condicionado (`ai_autoreply_disabled = false`) hace de
- * candado: solo la invocación que realmente apaga el flag notifica,
- * así una ráfaga de inbounds tras el tope no spamea notificaciones.
+ * Aviso al equipo con candado anti-spam temporal: máximo un aviso por
+ * conversación y por título por hora. Es el ÚNICO efecto de los caminos
+ * degradados (tope, handoff, envío fallido) — el modo IA↔humano nunca
+ * se cambia automáticamente; solo lo escribe el interruptor del panel.
  * Best-effort: nunca lanza.
  */
-async function retireConversationToHumans(
-  db: SupabaseClient,
-  args: RetireArgs,
-): Promise<void> {
-  try {
-    const { data: flipped } = await db
-      .from('conversations')
-      .update({ ai_autoreply_disabled: true })
-      .eq('id', args.conversationId)
-      .eq('ai_autoreply_disabled', false)
-      .select('id')
-    if (!flipped || flipped.length === 0) return // ya estaba apagado
-
-    const { data: contact } = await db
-      .from('contacts')
-      .select('name, phone')
-      .eq('id', args.contactId)
-      .maybeSingle()
-    const who = contact?.name || contact?.phone || 'Un paciente'
-
-    await db.from('notifications').insert({
-      account_id: args.accountId,
-      user_id: args.configOwnerUserId,
-      type: 'ai_escalation',
-      conversation_id: args.conversationId,
-      contact_id: args.contactId,
-      actor_user_id: null,
-      title: args.title,
-      body: `${who} ${args.body}`,
-    })
-  } catch (err) {
-    console.error('[ai auto-reply] retire-to-humans failed:', err)
-  }
-}
-
-/** Título estable del aviso de envío fallido — es también la llave del dedupe. */
-const SEND_FAILURE_TITLE = 'No se pudo enviar la respuesta del agente'
-
-/**
- * Aviso al equipo cuando la respuesta se generó pero el ENVÍO falló
- * (p. ej. la API key de Zernio fue revocada o el servicio está caído).
- * A diferencia del tope/handoff NO apaga el modo IA: un fallo
- * transitorio se recupera solo con el siguiente inbound. El candado
- * anti-spam es temporal — máximo un aviso por conversación por hora.
- * Best-effort: nunca lanza.
- */
-async function notifySendFailureOnce(
-  db: SupabaseClient,
-  args: Omit<RetireArgs, 'title' | 'body'>,
-): Promise<void> {
+async function notifyTeamOnce(db: SupabaseClient, args: NotifyArgs): Promise<void> {
   try {
     const sinceIso = new Date(Date.now() - 60 * 60_000).toISOString()
     const { data: recent } = await db
@@ -473,7 +434,7 @@ async function notifySendFailureOnce(
       .select('id')
       .eq('conversation_id', args.conversationId)
       .eq('type', 'ai_escalation')
-      .eq('title', SEND_FAILURE_TITLE)
+      .eq('title', args.title)
       .gte('created_at', sinceIso)
       .limit(1)
       .maybeSingle()
@@ -493,11 +454,11 @@ async function notifySendFailureOnce(
       conversation_id: args.conversationId,
       contact_id: args.contactId,
       actor_user_id: null,
-      title: SEND_FAILURE_TITLE,
-      body: `${who} escribió y el agente generó su respuesta, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.`,
+      title: args.title,
+      body: `${who} ${args.body}`,
     })
   } catch (err) {
-    console.error('[ai auto-reply] send-failure notice failed:', err)
+    console.error('[ai auto-reply] team notice failed:', err)
   }
 }
 

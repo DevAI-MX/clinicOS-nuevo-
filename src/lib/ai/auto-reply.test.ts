@@ -278,14 +278,15 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('does not send when the atomic slot claim loses the race — and retires the thread to humans', async () => {
+  it('does not send when the atomic slot claim loses the race — notifica SIN tocar el modo IA', async () => {
     h.state.claim = false
     await dispatchInboundToAiReply(ARGS)
     // It still attempts the claim, but the send is skipped.
     expect(h.state.rpcCalls).toHaveLength(1)
     expect(h.engineSendText).not.toHaveBeenCalled()
-    // El claim perdido significa tope alcanzado: el hilo pasa al equipo.
-    expect(h.state.conv?.ai_autoreply_disabled).toBe(true)
+    // El claim perdido significa tope alcanzado: aviso al equipo, pero
+    // el modo IA↔humano solo cambia a mano desde el panel.
+    expect(h.state.conv?.ai_autoreply_disabled).toBe(false)
     expect(h.state.notifications).toHaveLength(1)
     expect(h.state.notifications[0].type).toBe('ai_escalation')
   })
@@ -323,7 +324,7 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
-  it('cap alcanzado: no responde, apaga el auto-reply y avisa al equipo (nunca fantasma)', async () => {
+  it('cap alcanzado: no responde y avisa al equipo SIN tocar el modo IA (nunca fantasma)', async () => {
     h.state.conv = {
       assigned_agent_id: null,
       ai_autoreply_disabled: false,
@@ -332,15 +333,15 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
     expect(h.generateReply).not.toHaveBeenCalled()
-    // Incidente Acerotech: antes esto era un return silencioso y el
-    // lead quedaba hablando solo justo al aceptar la cita.
-    expect(h.state.conv?.ai_autoreply_disabled).toBe(true)
+    // Incidente Acerotech: antes esto era un return silencioso. Y el
+    // modo IA↔humano nunca cambia solo: únicamente el panel lo escribe.
+    expect(h.state.conv?.ai_autoreply_disabled).toBe(false)
     expect(h.state.notifications).toHaveLength(1)
     expect(h.state.notifications[0].title).toContain('tope')
     expect(String(h.state.notifications[0].body)).toContain('Acerotech')
   })
 
-  it('con el auto-reply ya apagado tras el tope, no vuelve a notificar', async () => {
+  it('el aviso de tope no se repite dentro de la ventana anti-spam', async () => {
     h.state.conv = {
       assigned_agent_id: null,
       ai_autoreply_disabled: false,
@@ -348,7 +349,7 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     }
     await dispatchInboundToAiReply(ARGS)
     expect(h.state.notifications).toHaveLength(1)
-    // Siguiente inbound: el gate de ai_autoreply_disabled corta antes.
+    // Siguiente inbound: mismo título dentro de la ventana → dedupe.
     await dispatchInboundToAiReply(ARGS)
     expect(h.state.notifications).toHaveLength(1)
   })
@@ -439,11 +440,14 @@ describe('dispatchInboundToAiReply — debounce', () => {
 })
 
 describe('dispatchInboundToAiReply — handoff', () => {
-  it('disables auto-reply, notifies the team, and does not send on handoff', async () => {
+  it('notifies the team and does not send on handoff — SIN tocar el modo IA', async () => {
     h.generateReply.mockResolvedValue({ text: '', handoff: true })
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
-    expect(h.state.updatePayload).toEqual({ ai_autoreply_disabled: true })
+    // El modo IA↔humano solo cambia a mano: el handoff ya no escribe
+    // en conversations (antes apagaba ai_autoreply_disabled).
+    expect(h.state.updatePayload).toBeNull()
+    expect(h.state.conv?.ai_autoreply_disabled).toBe(false)
     expect(h.state.rpcCalls).toHaveLength(0)
     // El handoff silencioso dejaba al paciente esperando sin que el
     // equipo se enterara: ahora siempre hay aviso.

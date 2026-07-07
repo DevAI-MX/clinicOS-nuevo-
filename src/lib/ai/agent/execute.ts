@@ -1177,13 +1177,11 @@ async function escalarAHumano(
   ctx: AgentToolContext,
   input: { motivo: string; urgente?: boolean },
 ): Promise<ToolExecResult> {
-  // Apaga el auto-reply de esta conversación: el humano toma el hilo.
-  await ctx.db
-    .from('conversations')
-    .update({ ai_autoreply_disabled: true })
-    .eq('id', ctx.conversationId)
-    .eq('account_id', ctx.accountId)
-
+  // Decisión de producto (2026-07-07): el modo IA↔humano NUNCA cambia
+  // solo — ni siquiera al escalar. Antes esto apagaba
+  // ai_autoreply_disabled y el chat quedaba mudo sin señal en la UI;
+  // ahora la notificación es la señal para que una persona tome el
+  // hilo y, si quiere, apague la IA desde el panel.
   await dropNotification(
     ctx,
     'ai_escalation',

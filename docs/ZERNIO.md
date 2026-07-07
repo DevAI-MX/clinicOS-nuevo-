@@ -54,7 +54,7 @@ Ante cada mensaje entrante de un paciente, el agente puede:
 | `agendar_cita` | **Aparta** la cita en `pendiente` (reagenda si ya hay una) |
 | `prevalidar_anticipo` | Registra el anticipo en `pendiente` (en revisión) |
 | `clasificar_lead` | Etapa del embudo + nombre en el CRM |
-| `avisar_equipo` / `escalar_a_humano` | Avisos en Notificaciones; escalar apaga el auto-reply |
+| `avisar_equipo` / `escalar_a_humano` | Avisos en Notificaciones; el modo IA↔humano solo cambia a mano desde el panel |
 
 **Regla de oro:** el agente **solo prevalida**. Citas y pagos quedan
 `pendiente`; el equipo confirma en el panel (Calendario / ficha de cita),

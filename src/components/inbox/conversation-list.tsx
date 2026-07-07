@@ -9,7 +9,7 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X } from "lucide-react";
+import { Search, ChevronDown, X, Bot, User } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Input } from "@/components/ui/input";
 import {
@@ -432,6 +432,14 @@ function ConversationItem({
   const displayName = contact?.name || contact?.phone || "Unknown";
   const initials = displayName.charAt(0).toUpperCase();
 
+  // Modo IA↔humano SIEMPRE visible por chat (incidente 2026-07-07: una
+  // conversación quedó en modo humano sin ninguna señal en la UI y se
+  // asumió que el agente estaba roto). Un agente asignado también
+  // silencia el auto-reply, así que cuenta como modo humano.
+  const humanMode =
+    conversation.ai_autoreply_disabled === true ||
+    Boolean(conversation.assigned_agent_id);
+
   const handleClick = useCallback(() => {
     onSelect(conversation);
   }, [onSelect, conversation]);
@@ -466,8 +474,30 @@ function ConversationItem({
       {/* Content */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
-            {displayName}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-sm font-medium text-foreground">
+              {displayName}
+            </span>
+            <span
+              className={cn(
+                "inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide",
+                humanMode
+                  ? "bg-amber-500/15 text-amber-500"
+                  : "bg-emerald-500/15 text-emerald-500"
+              )}
+              title={
+                humanMode
+                  ? "Modo humano: el agente IA NO responde este chat"
+                  : "Modo IA: el agente responde automáticamente"
+              }
+            >
+              {humanMode ? (
+                <User className="h-2.5 w-2.5" />
+              ) : (
+                <Bot className="h-2.5 w-2.5" />
+              )}
+              {humanMode ? "Humano" : "IA"}
+            </span>
           </span>
           <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
         </div>
