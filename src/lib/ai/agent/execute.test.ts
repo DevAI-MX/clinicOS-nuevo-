@@ -1,6 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { executeClinicalTool } from './execute'
 import type { AgentToolContext } from './tools'
+import { retrieveKnowledge } from '../knowledge'
+
+// consultar_conocimiento delega en retrieveKnowledge, que ya tiene su
+// propia cobertura (knowledge.test.ts) contra pgvector/FTS reales. Aquí
+// solo nos importa que la tool la llame bien y dé forma al resultado.
+vi.mock('../knowledge', () => ({ retrieveKnowledge: vi.fn() }))
+const mockRetrieveKnowledge = vi.mocked(retrieveKnowledge)
 
 // ------------------------------------------------------------
 // Fake Supabase en memoria — soporta el subconjunto de la query API
@@ -159,7 +166,10 @@ const TZ = 'America/Mexico_City'
 // Miércoles 8 de julio de 2026, 10:00 CDMX (16:00Z).
 const NOW = new Date('2026-07-08T16:00:00Z')
 
-function ctxWith(db: ReturnType<typeof fakeDb>): AgentToolContext {
+function ctxWith(
+  db: ReturnType<typeof fakeDb>,
+  overrides: Partial<AgentToolContext> = {},
+): AgentToolContext {
   return {
     db: db as never,
     accountId: ACCOUNT,
@@ -169,6 +179,8 @@ function ctxWith(db: ReturnType<typeof fakeDb>): AgentToolContext {
     contactName: 'María López',
     timezone: TZ,
     now: NOW,
+    embeddingsApiKey: null,
+    ...overrides,
   }
 }
 
@@ -193,6 +205,7 @@ const PROC = {
 describe('executeClinicalTool', () => {
   beforeEach(() => {
     idc = 1
+    mockRetrieveKnowledge.mockReset()
   })
 
   it('consultar_catalogo devuelve procedimientos activos formateados', async () => {
@@ -392,6 +405,47 @@ describe('executeClinicalTool', () => {
     expect(out.ok).toBe(true)
     expect(out.cuentas).toHaveLength(0)
     expect(out.nota).toContain('NO inventes')
+  })
+
+  it('consultar_conocimiento pasa la pregunta y la cuenta a retrieveKnowledge y regresa los extractos', async () => {
+    mockRetrieveKnowledge.mockResolvedValue(['La clínica no maneja seguros médicos.'])
+    const db = fakeDb()
+    const res = await executeClinicalTool(
+      'consultar_conocimiento',
+      { pregunta: '¿aceptan seguro de gastos médicos?' },
+      ctxWith(db, { embeddingsApiKey: 'key-123' }),
+    )
+    expect(mockRetrieveKnowledge).toHaveBeenCalledWith(
+      db,
+      ACCOUNT,
+      { embeddingsApiKey: 'key-123' },
+      '¿aceptan seguro de gastos médicos?',
+      5,
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.resultados).toEqual(['La clínica no maneja seguros médicos.'])
+  })
+
+  it('consultar_conocimiento sin resultados avisa que no invente y sugiere escalar', async () => {
+    mockRetrieveKnowledge.mockResolvedValue([])
+    const db = fakeDb()
+    const res = await executeClinicalTool(
+      'consultar_conocimiento',
+      { pregunta: 'algo muy específico que no está documentado' },
+      ctxWith(db),
+    )
+    const out = JSON.parse(res.content)
+    expect(out.ok).toBe(true)
+    expect(out.resultados).toHaveLength(0)
+    expect(out.nota).toContain('NO inventes')
+  })
+
+  it('consultar_conocimiento sin pregunta devuelve error', async () => {
+    const db = fakeDb()
+    const res = await executeClinicalTool('consultar_conocimiento', {}, ctxWith(db))
+    expect(res.isError).toBe(true)
+    expect(mockRetrieveKnowledge).not.toHaveBeenCalled()
   })
 
   it('consultar_mis_citas lista solo las citas del contacto con su estado', async () => {

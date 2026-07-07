@@ -10,5 +10,11 @@ export type {
 export { buildClinicalSystemPrompt } from './prompt'
 export type { ClinicalPromptArgs } from './prompt'
 export { CLINICAL_TOOLS } from './tools'
-export type { AgentToolContext } from './tools'
-export { clinicTimezone } from './clinic-time'
+export type { AgentToolContext, ToolDefinition, ToolExecutor, ToolExecResult } from './tools'
+export { FUNNEL_PIPELINE_NAME } from './execute'
+export {
+  clinicTimezone,
+  formatSlotLabel,
+  instantFromLocalDateTime,
+  wallPartsInTz,
+} from './clinic-time'

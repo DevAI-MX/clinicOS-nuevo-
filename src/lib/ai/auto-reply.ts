@@ -1,9 +1,10 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
 import { generateReply } from './generate'
-import { buildSystemPrompt } from './defaults'
+import { buildSystemPrompt, aiDebounceWindowMs, aiDebounceMaxWaitMs } from './defaults'
 import { latestUserMessage } from './query'
 import {
   runClinicalAgent,
@@ -88,6 +89,22 @@ export async function dispatchInboundToAiReply(
     // below (this read can race a concurrent inbound).
     if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) return
 
+    // Debounce: if the patient is mid-burst (several messages in a row),
+    // wait for it to go quiet so we answer once, coherently, instead of
+    // once per message. Only the invocation that "wins" the burst
+    // continues past this point.
+    const wonDispatch = await debounceAndClaim(db, conversationId)
+    if (!wonDispatch) return
+
+    // The thread may have changed hands (or been switched off) while we
+    // were waiting out the burst — re-check before doing any real work.
+    const { data: fresh, error: freshErr } = await db
+      .from('conversations')
+      .select('assigned_agent_id, ai_autoreply_disabled')
+      .eq('id', conversationId)
+      .maybeSingle()
+    if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
+
     const messages = await buildConversationContext(db, conversationId)
     if (messages.length === 0) return
 
@@ -130,6 +147,7 @@ export async function dispatchInboundToAiReply(
           contactName,
           timezone,
           now,
+          embeddingsApiKey: config.embeddingsApiKey,
         },
       })
       text = result.text
@@ -162,6 +180,18 @@ export async function dispatchInboundToAiReply(
         .from('conversations')
         .update({ ai_autoreply_disabled: true })
         .eq('id', conversationId)
+      return
+    }
+
+    // El modo pudo cambiar mientras el modelo generaba (una corrida
+    // tarda varios segundos): si un humano tomó el hilo o lo puso en
+    // modo humano durante ese lapso, el mensaje ya no debe salir.
+    const { data: gate, error: gateErr } = await db
+      .from('conversations')
+      .select('assigned_agent_id, ai_autoreply_disabled')
+      .eq('id', conversationId)
+      .maybeSingle()
+    if (gateErr || !gate || gate.assigned_agent_id || gate.ai_autoreply_disabled) {
       return
     }
 
@@ -219,4 +249,63 @@ export async function dispatchInboundToAiReply(
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Debounces the AI reply per conversation. Every call reschedules the
+ * shared `ai_dispatch_due_at` column forward (last message in the burst
+ * wins), then waits it out — polling in short sleeps inside this same
+ * invocation, since the app is serverless with no persistent scheduler
+ * to hand this off to. Once the window has genuinely elapsed without
+ * being pushed further, it atomically claims the dispatch via
+ * `claim_ai_dispatch_slot` (compare-and-swap, mirrors
+ * `claim_ai_reply_slot`). Exactly one invocation per burst gets `true`;
+ * the rest see the column change or clear underneath them and stand
+ * down. `buildConversationContext` rereads the full recent transcript
+ * regardless of which message triggered it, so the single winning
+ * dispatch already answers the whole accumulated burst.
+ */
+async function debounceAndClaim(
+  db: SupabaseClient,
+  conversationId: string,
+): Promise<boolean> {
+  const windowMs = aiDebounceWindowMs()
+  if (windowMs <= 0) return true // disabled (e.g. AI_DEBOUNCE_WINDOW_MS=0 in tests)
+
+  const dueAt = new Date(Date.now() + windowMs)
+  const { data: sched, error: schedErr } = await db
+    .from('conversations')
+    .update({ ai_dispatch_due_at: dueAt.toISOString() })
+    .eq('id', conversationId)
+    .select('ai_dispatch_due_at')
+    .maybeSingle()
+  if (schedErr || !sched?.ai_dispatch_due_at) return false
+
+  let observed = new Date(sched.ai_dispatch_due_at as string).getTime()
+  const deadline = Date.now() + aiDebounceMaxWaitMs()
+
+  while (true) {
+    const remaining = observed - Date.now()
+    const budget = deadline - Date.now()
+    if (remaining <= 0 || budget <= 0) break
+    await sleep(Math.min(remaining, budget))
+
+    const { data: row } = await db
+      .from('conversations')
+      .select('ai_dispatch_due_at')
+      .eq('id', conversationId)
+      .maybeSingle()
+    if (!row?.ai_dispatch_due_at) return false // someone else already claimed it
+    observed = new Date(row.ai_dispatch_due_at as string).getTime()
+  }
+
+  const { data: claimed, error: claimErr } = await db.rpc('claim_ai_dispatch_slot', {
+    conversation_id: conversationId,
+    expected_due_at: new Date(observed).toISOString(),
+  })
+  return !claimErr && claimed === true
 }

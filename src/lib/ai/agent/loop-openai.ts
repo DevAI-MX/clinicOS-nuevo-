@@ -19,6 +19,7 @@ import {
   CLINICAL_TOOLS,
   type RunClinicalAgentArgs,
   type RunClinicalAgentResult,
+  type ToolDefinition,
 } from './tools'
 import { executeClinicalTool } from './execute'
 
@@ -32,17 +33,19 @@ const MAX_TOOL_ROUNDS = 6
 // pero el planeo de herramientas + razonamiento necesitan espacio.
 const OPENAI_AGENT_MAX_TOKENS = 4096
 
-// CLINICAL_TOOLS está en formato Anthropic (input_schema); OpenAI usa
+// El input recibido está en formato Anthropic (input_schema); OpenAI usa
 // { type:'function', function:{ name, description, parameters } }. El
 // JSON Schema es el mismo, solo cambia el envoltorio.
-const OPENAI_TOOLS = CLINICAL_TOOLS.map((t) => ({
-  type: 'function' as const,
-  function: {
-    name: t.name,
-    description: t.description,
-    parameters: t.input_schema,
-  },
-}))
+function toOpenAiTools(tools: readonly ToolDefinition[]) {
+  return tools.map((t) => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }))
+}
 
 interface OpenAiToolCall {
   id: string
@@ -85,7 +88,7 @@ async function callOpenAi(
       body: JSON.stringify({
         model: args.model,
         messages,
-        tools: OPENAI_TOOLS,
+        tools: toOpenAiTools(args.tools ?? CLINICAL_TOOLS),
         tool_choice: 'auto',
         max_completion_tokens: OPENAI_AGENT_MAX_TOKENS,
       }),
@@ -130,8 +133,9 @@ export async function runOpenAiAgent(
       return { text, handoff, escalated }
     }
 
+    const executeTool = args.executeTool ?? executeClinicalTool
     for (const tc of toolCalls) {
-      const r = await executeClinicalTool(
+      const r = await executeTool(
         tc.function.name,
         parseArgs(tc.function.arguments),
         args.ctx,

@@ -3,6 +3,7 @@ import {
   isValidStatusTransition,
   mapZernioAttachmentType,
   mapZernioInbound,
+  mapZernioOutboundEcho,
   mapZernioStatusEvent,
   type ZernioInboundMessage,
 } from './inbound'
@@ -112,6 +113,69 @@ describe('mapZernioInbound — media messages', () => {
     expect(mapped?.contentType).toBe('audio')
     expect(mapped?.contentText).toBeNull()
     expect(mapped?.mediaUrl).toBe('https://cdn.zernio.test/nota.ogg')
+  })
+})
+
+describe('mapZernioOutboundEcho — sends made outside wacrm', () => {
+  function outboundMessage(
+    overrides: Partial<ZernioInboundMessage> = {},
+  ): ZernioInboundMessage {
+    return baseMessage({
+      direction: 'outgoing',
+      platformMessageId: 'wamid.OUTBOUND1',
+      text: 'Claro, te confirmo tu cita mañana',
+      ...overrides,
+    })
+  }
+
+  it('maps an outgoing text echo to the agent-message shape', () => {
+    const mapped = mapZernioOutboundEcho(outboundMessage())
+    expect(mapped).toEqual({
+      storedMessageId: 'wamid.OUTBOUND1',
+      contentType: 'text',
+      contentText: 'Claro, te confirmo tu cita mañana',
+      mediaUrl: null,
+      createdAtIso: '2026-07-06T10:15:30.000Z',
+      zernioConversationId: 'zc_1',
+      // Both ids: send-time persistence may have stored either one.
+      candidateIds: ['wamid.OUTBOUND1', 'zm_100'],
+    })
+  })
+
+  it('maps an outgoing media echo (attachment URL + caption)', () => {
+    const mapped = mapZernioOutboundEcho(
+      outboundMessage({
+        text: 'te mando la ubicación',
+        attachments: [{ type: 'image', url: 'https://cdn.zernio.test/mapa.png' }],
+      }),
+    )
+    expect(mapped?.contentType).toBe('image')
+    expect(mapped?.mediaUrl).toBe('https://cdn.zernio.test/mapa.png')
+    expect(mapped?.contentText).toBe('te mando la ubicación')
+  })
+
+  it('falls back to Zernio internal id when the echo has no wamid', () => {
+    const mapped = mapZernioOutboundEcho(
+      outboundMessage({ platformMessageId: undefined }),
+    )
+    expect(mapped?.storedMessageId).toBe('zm_100')
+    expect(mapped?.candidateIds).toEqual(['zm_100'])
+  })
+
+  it('returns null for incoming messages (those go through mapZernioInbound)', () => {
+    expect(mapZernioOutboundEcho(baseMessage())).toBeNull()
+  })
+
+  it('returns null when the echo carries no conversation id to map back', () => {
+    expect(
+      mapZernioOutboundEcho(outboundMessage({ conversationId: undefined })),
+    ).toBeNull()
+  })
+
+  it('returns null for content-less echoes (nothing to persist)', () => {
+    expect(
+      mapZernioOutboundEcho(outboundMessage({ text: null, attachments: [] })),
+    ).toBeNull()
   })
 })
 

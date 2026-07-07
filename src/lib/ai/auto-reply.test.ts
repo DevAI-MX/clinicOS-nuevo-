@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
+    dispatchDueAt: null as string | null,
   },
 }))
 
@@ -38,20 +39,46 @@ vi.mock('./admin-client', () => ({
       }
       // conversations
       return {
-        select: () => ({
+        select: (cols?: string) => ({
           eq: () => ({
-            maybeSingle: () =>
-              Promise.resolve({ data: h.state.conv, error: null }),
+            maybeSingle: () => {
+              if (cols === 'ai_dispatch_due_at') {
+                return Promise.resolve({
+                  data: { ai_dispatch_due_at: h.state.dispatchDueAt },
+                  error: null,
+                })
+              }
+              return Promise.resolve({ data: h.state.conv, error: null })
+            },
           }),
         }),
         update: (payload: Record<string, unknown>) => {
+          if (Object.prototype.hasOwnProperty.call(payload, 'ai_dispatch_due_at')) {
+            h.state.dispatchDueAt = payload.ai_dispatch_due_at as string | null
+            return {
+              eq: () => ({
+                select: () => ({
+                  maybeSingle: () =>
+                    Promise.resolve({
+                      data: { ai_dispatch_due_at: h.state.dispatchDueAt },
+                      error: null,
+                    }),
+                }),
+              }),
+            }
+          }
           h.state.updatePayload = payload
           return { eq: () => Promise.resolve({ error: null }) }
         },
       }
     },
-    rpc: (name: string, args: unknown) => {
+    rpc: (name: string, args: { expected_due_at?: string }) => {
       h.state.rpcCalls.push({ name, args })
+      if (name === 'claim_ai_dispatch_slot') {
+        const won = h.state.dispatchDueAt === args.expected_due_at
+        if (won) h.state.dispatchDueAt = null
+        return Promise.resolve({ data: won, error: null })
+      }
       return Promise.resolve({ data: h.state.claim, error: null })
     },
   }),
@@ -91,6 +118,10 @@ beforeEach(() => {
   h.state.claim = true
   h.state.updatePayload = null
   h.state.rpcCalls = []
+  h.state.dispatchDueAt = null
+  // Debounce is off by default in these tests — see the dedicated
+  // "debounce" describe block below for the window itself.
+  process.env.AI_DEBOUNCE_WINDOW_MS = '0'
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
@@ -183,6 +214,64 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     await dispatchInboundToAiReply(ARGS)
     expect(h.generateReply).not.toHaveBeenCalled()
     expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('drops the reply if a human switched the thread to human mode mid-generation', async () => {
+    // El humano apaga la IA MIENTRAS el modelo genera: el gate final
+    // (justo antes del claim/envío) debe descartar la respuesta.
+    h.generateReply.mockImplementation(async () => {
+      h.state.conv = {
+        assigned_agent_id: null,
+        ai_autoreply_disabled: true,
+        ai_reply_count: 0,
+      }
+      return { text: 'Hello!', handoff: false }
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.rpcCalls).toHaveLength(0) // ni siquiera intenta el claim
+  })
+
+  it('drops the reply if an agent took the thread mid-generation', async () => {
+    h.generateReply.mockImplementation(async () => {
+      h.state.conv = {
+        assigned_agent_id: 'agent-9',
+        ai_autoreply_disabled: false,
+        ai_reply_count: 0,
+      }
+      return { text: 'Hello!', handoff: false }
+    })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+})
+
+describe('dispatchInboundToAiReply — debounce', () => {
+  beforeEach(() => {
+    process.env.AI_DEBOUNCE_WINDOW_MS = '30'
+    process.env.AI_DEBOUNCE_MAX_WAIT_MS = '2000'
+  })
+
+  it('waits out the debounce window before sending', async () => {
+    const started = Date.now()
+    await dispatchInboundToAiReply(ARGS)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(25)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a message that arrives mid-burst reschedules — exactly one dispatch fires for the burst', async () => {
+    const p1 = dispatchInboundToAiReply(ARGS)
+    await new Promise((r) => setTimeout(r, 10)) // let p1 schedule and start waiting
+    const p2 = dispatchInboundToAiReply(ARGS) // "second message" — pushes the window out
+    await Promise.all([p1, p2])
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+  })
+
+  it('a message after a prior dispatch already sent starts a fresh window (no deadlock)', async () => {
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledTimes(2)
   })
 })
 

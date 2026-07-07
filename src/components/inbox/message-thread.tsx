@@ -618,13 +618,24 @@ export function MessageThread({
     setAiDisabled(next);
     onAiModeChange?.(conversation.id, next);
 
-    const supabase = createClient();
-    const { error } = await supabase
-      .from("conversations")
-      .update({ ai_autoreply_disabled: next })
-      .eq("id", conversation.id);
+    // Reactivar la IA también repone su presupuesto de respuestas: si la
+    // conversación ya agotó el tope (ai_reply_count), el modo IA se ve
+    // encendido pero el asistente nunca vuelve a contestar.
+    const patch = next
+      ? { ai_autoreply_disabled: true }
+      : { ai_autoreply_disabled: false, ai_reply_count: 0 };
 
-    if (error) {
+    const supabase = createClient();
+    // `.select()` confirma que el UPDATE tocó la fila: con RLS un update
+    // sin permiso no da error, simplemente afecta 0 filas.
+    const { data, error } = await supabase
+      .from("conversations")
+      .update(patch)
+      .eq("id", conversation.id)
+      .select("id")
+      .maybeSingle();
+
+    if (error || !data) {
       console.error("Failed to toggle AI mode:", error);
       toast.error("No se pudo cambiar el modo. Intenta de nuevo.");
       setAiDisabled(!next); // rollback

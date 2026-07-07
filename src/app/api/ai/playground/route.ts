@@ -7,19 +7,57 @@ import { generateReply } from '@/lib/ai/generate'
 import { buildSystemPrompt } from '@/lib/ai/defaults'
 import { latestUserMessage } from '@/lib/ai/query'
 import { AiError, type ChatMessage } from '@/lib/ai/types'
+import {
+  runClinicalAgent,
+  buildClinicalSystemPrompt,
+  clinicTimezone,
+} from '@/lib/ai/agent'
+import { executeClinicalTool } from '@/lib/ai/agent/execute'
+import type { AgentToolContext, ToolExecResult } from '@/lib/ai/agent'
 
 // Keep the tested transcript bounded, mirroring the live context window.
 const MAX_TURNS = 20
 
+// Tools account-scoped de solo lectura: en el playground corren de
+// verdad (catálogo, agenda, datos de pago y base de conocimiento
+// reales). Las demás operan sobre un contacto/conversación que aquí no
+// existe — se SIMULAN para que el flujo conversacional se pueda probar
+// completo sin escribir citas/pagos/leads falsos en producción.
+const PLAYGROUND_REAL_TOOLS = new Set([
+  'consultar_catalogo',
+  'consultar_disponibilidad',
+  'consultar_datos_pago',
+  'consultar_conocimiento',
+])
+
+async function playgroundExecuteTool(
+  name: string,
+  input: unknown,
+  ctx: AgentToolContext,
+): Promise<ToolExecResult> {
+  if (PLAYGROUND_REAL_TOOLS.has(name)) {
+    return executeClinicalTool(name, input, ctx)
+  }
+  return {
+    content: JSON.stringify({
+      ok: true,
+      simulado: true,
+      nota: `Modo prueba: ${name} se simuló sin tocar datos reales. Continúa la conversación como si la acción hubiera funcionado.`,
+    }),
+  }
+}
+
 /**
  * POST /api/ai/playground  (agent+)
  *
- * Test-chat with the account's agent WITHOUT touching WhatsApp. Runs the
- * exact same path the auto-reply bot uses — knowledge-base retrieval +
- * `auto_reply` system prompt + the configured provider — so what you see
- * here is what a real customer would get. Reads the config even when the
- * master switch is off (requireActive:false) so you can try it before
- * going live. Stateless: the client sends the running transcript each turn.
+ * Test-chat with the account's agent WITHOUT touching WhatsApp. Mirrors
+ * the auto-reply dispatch: when `clinical_agent_enabled` is on it runs
+ * the same tool-calling clinical agent a patient would get (read-only
+ * tools live, mutations simulated — no test appointments/payments land
+ * in real tables); otherwise the legacy single-completion path with
+ * knowledge-base retrieval. Reads the config even when the master
+ * switch is off (requireActive:false) so you can try it before going
+ * live. Stateless: the client sends the running transcript each turn.
  */
 export async function POST(request: Request) {
   try {
@@ -70,6 +108,38 @@ export async function POST(request: Request) {
         },
         { status: 400 },
       )
+    }
+
+    if (config.clinicalAgentEnabled) {
+      // Mismo agente clínico que atiende WhatsApp (ver auto-reply.ts),
+      // con las mutaciones simuladas (playgroundExecuteTool).
+      const timezone = clinicTimezone()
+      const now = new Date()
+      const { text, handoff } = await runClinicalAgent({
+        provider: config.provider,
+        apiKey: config.apiKey,
+        model: config.model,
+        systemPrompt: buildClinicalSystemPrompt({
+          userPrompt: config.systemPrompt,
+          contactName: null,
+          timezone,
+          now,
+        }),
+        messages,
+        executeTool: playgroundExecuteTool,
+        ctx: {
+          db: supabase,
+          accountId,
+          contactId: '',
+          conversationId: '',
+          userId,
+          contactName: null,
+          timezone,
+          now,
+          embeddingsApiKey: config.embeddingsApiKey,
+        },
+      })
+      return NextResponse.json({ reply: text, handoff })
     }
 
     const knowledge = await retrieveKnowledge(

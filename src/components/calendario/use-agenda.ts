@@ -82,12 +82,15 @@ export function useAgenda(rangeStart: Date, rangeEnd: Date) {
       await Promise.all([
         // Todo lo que TOQUE el rango (starts_at < fin Y ends_at > inicio),
         // no solo lo que empiece dentro — una cita que cruza medianoche
-        // debe pintarse en ambos días.
+        // debe pintarse en ambos días. Las canceladas no se pintan: al
+        // cancelar, la cita desaparece de la rejilla (sigue en la BD y
+        // en la ficha del contacto para el historial).
         supabase
           .from("appointments")
           .select(AGENDA_SELECT)
           .lt("starts_at", endIso)
           .gt("ends_at", startIso)
+          .neq("status", "cancelada")
           .order("starts_at", { ascending: true }),
         supabase
           .from("schedule_blocks")
@@ -156,8 +159,8 @@ export function useAgenda(rangeStart: Date, rangeEnd: Date) {
   }, [supabase]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- los
-    // setters corren tras awaits de Supabase, no síncronos en el effect.
+    // Los setters corren tras awaits de Supabase, no síncronos en el effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchAgenda();
   }, [fetchAgenda]);
 

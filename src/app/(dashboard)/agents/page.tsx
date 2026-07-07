@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, Sparkles, Settings2 } from 'lucide-react';
+import { Bot, Sparkles, Settings2, Stethoscope } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { AiPlayground } from '@/components/agents/ai-playground';
+import { InternalAssistantChat } from '@/components/agents/internal-assistant-chat';
 import { AiConfig } from '@/components/settings/ai-config';
 
-type Tab = 'playground' | 'setup';
+type Tab = 'playground' | 'internal' | 'setup';
 
 export default function AgentsPage() {
   const [tab, setTab] = useState<Tab>('playground');
@@ -54,6 +55,9 @@ export default function AgentsPage() {
             <TabsTrigger value="playground">
               <Sparkles className="mr-1.5 h-4 w-4" /> Playground
             </TabsTrigger>
+            <TabsTrigger value="internal">
+              <Stethoscope className="mr-1.5 h-4 w-4" /> Internal assistant
+            </TabsTrigger>
             <TabsTrigger value="setup">
               <Settings2 className="mr-1.5 h-4 w-4" /> Setup
             </TabsTrigger>
@@ -61,6 +65,10 @@ export default function AgentsPage() {
 
           <TabsContent value="playground" className="mt-4">
             <AiPlayground onGoToSetup={() => setTab('setup')} />
+          </TabsContent>
+
+          <TabsContent value="internal" className="mt-4">
+            <InternalAssistantChat onGoToSetup={() => setTab('setup')} />
           </TabsContent>
 
           <TabsContent value="setup" className="mt-4">

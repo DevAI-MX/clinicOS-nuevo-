@@ -160,6 +160,58 @@ export function mapZernioInbound(message: ZernioInboundMessage): MappedZernioInb
   }
 }
 
+export interface MappedZernioOutboundEcho {
+  /** Value persisted to messages.message_id (wamid preferred). */
+  storedMessageId: string
+  contentType: 'text' | 'image' | 'video' | 'document' | 'audio'
+  contentText: string | null
+  mediaUrl: string | null
+  createdAtIso: string
+  /** Zernio inbox conversation id — the only key we have to map the
+   *  echo back to a wacrm conversation (outbound payloads carry the
+   *  business as sender, not the customer's phone). */
+  zernioConversationId: string
+  /** Both ids the send-time persistence could have stored (client.ts
+   *  prefers the wamid but falls back to Zernio's internal id) — used
+   *  to dedupe against messages already inserted by panel/bot sends. */
+  candidateIds: string[]
+}
+
+/**
+ * Map a Zernio `message.sent` echo (a send made from ANY surface —
+ * wacrm panel, bot, the phone's WhatsApp, Zernio's dashboard) to the
+ * wacrm agent-message shape. Returns null when the echo can't or
+ * shouldn't be persisted: wrong direction, no conversation id to map
+ * it back, or no content (status-only echoes).
+ */
+export function mapZernioOutboundEcho(
+  message: ZernioInboundMessage,
+): MappedZernioOutboundEcho | null {
+  if (message.direction !== 'outgoing') return null
+  if (!message.conversationId) return null
+
+  const firstAttachment = message.attachments?.[0]
+  const contentType = firstAttachment
+    ? mapZernioAttachmentType(firstAttachment.type)
+    : 'text'
+  const text = typeof message.text === 'string' && message.text !== '' ? message.text : null
+  if (!text && !firstAttachment) return null
+
+  return {
+    storedMessageId: message.platformMessageId || message.id,
+    contentType,
+    contentText: text,
+    mediaUrl: firstAttachment?.url || null,
+    createdAtIso: message.sentAt
+      ? new Date(message.sentAt).toISOString()
+      : new Date().toISOString(),
+    zernioConversationId: message.conversationId,
+    candidateIds: [message.platformMessageId, message.id].filter(
+      (v): v is string => Boolean(v),
+    ),
+  }
+}
+
 /** Zernio status event name → wacrm messages.status value. */
 export function mapZernioStatusEvent(event: string): 'delivered' | 'read' | 'failed' | null {
   switch (event) {
@@ -223,10 +275,13 @@ export async function processZernioEvent(payload: ZernioWebhookEvent): Promise<v
         await handleZernioReaction(payload)
         return
       case 'message.sent':
-        // Outbound sends are persisted at send time (client.ts callers)
-        // — echoing them here would duplicate rows. Sends made from the
-        // Zernio dashboard itself are not mirrored (documented).
-        console.log('[zernio] message.sent acknowledged (persisted at send time)')
+        // Un humano puede responder por FUERA de wacrm (el teléfono con
+        // WhatsApp, el dashboard de Zernio). Ese echo se persiste como
+        // mensaje de agente para que el hilo — y el contexto que lee el
+        // agente IA al retomar — quede completo. Los envíos hechos desde
+        // wacrm (panel o bot) ya se guardaron al mandarse y se
+        // deduplican por message_id.
+        await processZernioOutboundEcho(payload)
         return
       case 'webhook.test':
         console.log('[zernio] webhook.test received — endpoint reachable')
@@ -402,6 +457,86 @@ async function processZernioInboundMessage(payload: ZernioWebhookEvent): Promise
     content_type: mapped.contentType,
     text: mapped.contentText,
   })
+}
+
+// ============================================================
+// message.sent — echo de envíos hechos fuera de wacrm
+// ============================================================
+
+/**
+ * Persist an outbound echo as an `agent` message. Covers replies the
+ * team sends from the phone's WhatsApp or from Zernio's own dashboard —
+ * without this, those messages never reach `messages` and the AI agent
+ * resumes the thread blind to what the human said. Sends made through
+ * wacrm (panel or bot) were already persisted at send time and are
+ * skipped via the message_id dedupe.
+ */
+async function processZernioOutboundEcho(payload: ZernioWebhookEvent): Promise<void> {
+  const message = payload.message
+  if (!message) return
+  if (message.platform && message.platform !== 'whatsapp') return
+
+  const mapped = mapZernioOutboundEcho(message)
+  if (!mapped) return
+
+  const db = supabaseAdmin()
+  const account = await resolveZernioWacrmAccount(db)
+  if (!account) return
+
+  // Solo conversaciones que ya conocemos: el id de inbox de Zernio se
+  // persiste al recibir inbounds (processZernioInboundMessage). Un echo
+  // hacia una conversación sin espejo en wacrm se ignora.
+  const { data: conversation } = await db
+    .from('conversations')
+    .select('id')
+    .eq('account_id', account.accountId)
+    .eq('zernio_conversation_id', mapped.zernioConversationId)
+    .maybeSingle()
+  if (!conversation) {
+    console.log(
+      '[zernio] message.sent for unmapped conversation — skipping',
+      mapped.zernioConversationId,
+    )
+    return
+  }
+
+  const { data: existing } = await db
+    .from('messages')
+    .select('id')
+    .eq('conversation_id', conversation.id)
+    .in('message_id', mapped.candidateIds)
+    .limit(1)
+    .maybeSingle()
+  if (existing) return // persisted at send time (panel/bot) or a replay
+
+  const { error: msgError } = await db.from('messages').insert({
+    conversation_id: conversation.id,
+    sender_type: 'agent',
+    content_type: mapped.contentType,
+    content_text: mapped.contentText,
+    media_url: mapped.mediaUrl,
+    message_id: mapped.storedMessageId,
+    status: 'sent',
+    created_at: mapped.createdAtIso,
+  })
+  if (msgError) {
+    console.error('[zernio] error inserting outbound echo:', msgError)
+    return
+  }
+
+  // Refleja el envío en la lista del inbox (sin tocar unread_count —
+  // es un mensaje nuestro, no del paciente).
+  const { error: convError } = await db
+    .from('conversations')
+    .update({
+      last_message_text: mapped.contentText || `[${mapped.contentType}]`,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversation.id)
+  if (convError) {
+    console.error('[zernio] error updating conversation after echo:', convError)
+  }
 }
 
 // ============================================================

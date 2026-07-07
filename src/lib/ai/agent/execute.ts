@@ -31,6 +31,7 @@ import {
   parseClockToMinutes,
   wallPartsInTz,
 } from './clinic-time'
+import { retrieveKnowledge } from '../knowledge'
 
 // Estados de cita que ocupan un hueco (los demás liberan la agenda).
 const ACTIVE_APPT_STATUSES = ['pendiente', 'confirmada', 'completada']
@@ -190,11 +191,14 @@ async function dropNotification(
 // patrón self-healing que las tags de clasificar_lead.
 // ------------------------------------------------------------
 
-const FUNNEL_PIPELINE_NAME = 'Embudo IA'
+export const FUNNEL_PIPELINE_NAME = 'Embudo IA'
 
 // Etapas espejo del embudo legacy: preguntón → interesado →
-// seguimiento → cita apartada → anticipo en revisión → agendado.
-// "Agendado" la mueve el equipo al confirmar el anticipo en el panel.
+// seguimiento → cita apartada → anticipo en revisión → agendado →
+// paciente. "Agendado" la mueve el equipo al confirmar el anticipo en
+// el panel; "Paciente" la mueve el trigger de la BD cuando una cita se
+// marca completada (migración 036) — segmenta a quienes ya pasaron por
+// la clínica.
 const FUNNEL_STAGES = [
   { name: 'Preguntón', color: '#94a3b8' },
   { name: 'Interesado', color: '#3b82f6' },
@@ -202,6 +206,7 @@ const FUNNEL_STAGES = [
   { name: 'Cita apartada', color: '#8b5cf6' },
   { name: 'Anticipo en revisión', color: '#f97316' },
   { name: 'Agendado', color: '#22c55e' },
+  { name: 'Paciente', color: '#14b8a6' },
 ] as const
 type FunnelStageName = (typeof FUNNEL_STAGES)[number]['name']
 
@@ -259,12 +264,35 @@ async function syncFunnelDeal(
     const pipelineId = await ensureFunnelPipeline(ctx)
     if (!pipelineId) return
 
-    const { data: stages } = await ctx.db
+    let { data: stages } = await ctx.db
       .from('pipeline_stages')
       .select('id, name, position')
       .eq('pipeline_id', pipelineId)
-    const target = (stages ?? []).find((s) => s.name === stageName)
-    if (!target) return
+    let target = (stages ?? []).find((s) => s.name === stageName)
+    if (!target) {
+      // Self-healing: pipelines creados antes de que existiera una etapa
+      // nueva (p. ej. "Paciente") la reciben al final la primera vez que
+      // se necesita — mismo espíritu que ensureFunnelPipeline.
+      const have = new Set((stages ?? []).map((s) => s.name))
+      const maxPos = (stages ?? []).reduce((m, s) => Math.max(m, s.position), -1)
+      const missing = FUNNEL_STAGES.filter((s) => !have.has(s.name))
+      if (missing.length === 0) return
+      await ctx.db.from('pipeline_stages').insert(
+        missing.map((s, i) => ({
+          pipeline_id: pipelineId,
+          name: s.name,
+          color: s.color,
+          position: maxPos + 1 + i,
+        })),
+      )
+      const refreshed = await ctx.db
+        .from('pipeline_stages')
+        .select('id, name, position')
+        .eq('pipeline_id', pipelineId)
+      stages = refreshed.data
+      target = (stages ?? []).find((s) => s.name === stageName)
+      if (!target) return
+    }
 
     const { data: deal } = await ctx.db
       .from('deals')
@@ -514,6 +542,38 @@ async function consultarMisCitas(ctx: AgentToolContext): Promise<ToolExecResult>
     citas,
     recordatorio:
       'Una cita "pendiente de confirmar" NO está confirmada: el equipo la confirma al validar el anticipo. No le digas al paciente que ya quedó en firme si sigue pendiente.',
+  })
+}
+
+async function consultarConocimiento(
+  ctx: AgentToolContext,
+  args: { pregunta?: string },
+): Promise<ToolExecResult> {
+  const pregunta = typeof args.pregunta === 'string' ? args.pregunta.trim() : ''
+  if (!pregunta) return fail('Falta la pregunta a buscar.')
+
+  const excerpts = await retrieveKnowledge(
+    ctx.db,
+    ctx.accountId,
+    { embeddingsApiKey: ctx.embeddingsApiKey },
+    pregunta,
+    5,
+  )
+
+  if (excerpts.length === 0) {
+    return ok({
+      ok: true,
+      resultados: [],
+      nota:
+        'No encontré nada en la base de conocimiento sobre esto. NO inventes la respuesta: dile al paciente que lo confirmas y usa avisar_equipo o escalar_a_humano según la urgencia.',
+    })
+  }
+
+  return ok({
+    ok: true,
+    resultados: excerpts,
+    instruccion_para_paciente:
+      'Usa estos extractos como referencia para responder, sin citarlos textualmente ni mencionar que consultaste una base de datos.',
   })
 }
 
@@ -947,6 +1007,8 @@ export async function executeClinicalTool(
         return await consultarDatosPago(ctx)
       case 'consultar_mis_citas':
         return await consultarMisCitas(ctx)
+      case 'consultar_conocimiento':
+        return await consultarConocimiento(ctx, args)
       case 'agendar_cita':
         return await agendarCita(ctx, args)
       case 'prevalidar_anticipo':

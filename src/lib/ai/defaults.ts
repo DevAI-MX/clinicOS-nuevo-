@@ -28,11 +28,30 @@ export const MAX_OUTPUT_TOKENS = 1024
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_CONTEXT_MESSAGE_LIMIT = 20
+const DEFAULT_DEBOUNCE_WINDOW_MS = 9_000
+const DEFAULT_DEBOUNCE_MAX_WAIT_MS = 40_000
 
 /** Per-call provider timeout. Override with `AI_REQUEST_TIMEOUT_MS`. */
 export function aiRequestTimeoutMs(): number {
   const raw = Number(process.env.AI_REQUEST_TIMEOUT_MS)
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_REQUEST_TIMEOUT_MS
+}
+
+/** How long to wait, per conversation, for a message burst to go quiet
+ *  before the AI replies. Reset on every inbound message. Override with
+ *  `AI_DEBOUNCE_WINDOW_MS` (set to `0` in tests to dispatch immediately). */
+export function aiDebounceWindowMs(): number {
+  const raw = Number(process.env.AI_DEBOUNCE_WINDOW_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_DEBOUNCE_WINDOW_MS
+}
+
+/** Hard ceiling on total time spent waiting out a burst, regardless of
+ *  how often it gets rescheduled — keeps a chatty patient from holding
+ *  the invocation open indefinitely. Override with
+ *  `AI_DEBOUNCE_MAX_WAIT_MS`. */
+export function aiDebounceMaxWaitMs(): number {
+  const raw = Number(process.env.AI_DEBOUNCE_MAX_WAIT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DEBOUNCE_MAX_WAIT_MS
 }
 
 /** How many recent text messages to feed the model. Override with

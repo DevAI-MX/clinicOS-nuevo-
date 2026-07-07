@@ -32,6 +32,10 @@ export interface AgentToolContext {
   timezone: string
   /** Reloj inyectado — nunca `new Date()` dentro de las herramientas. */
   now: Date
+  /** API key (BYO) para generar embeddings de consulta — la usa
+   *  consultar_conocimiento vía retrieveKnowledge. null si la cuenta no
+   *  la configuró (la tool responde "sin resultados" en ese caso). */
+  embeddingsApiKey: string | null
 }
 
 /** Resultado de ejecutar una herramienta. */
@@ -44,6 +48,23 @@ export interface ToolExecResult {
   escalated?: boolean
 }
 
+/** Forma de una definición de tool en el formato Anthropic (el mismo
+ *  JSON Schema sirve para OpenAI — loop-openai.ts solo cambia el
+ *  envoltorio). */
+export interface ToolDefinition {
+  name: string
+  description: string
+  input_schema: unknown
+}
+
+/** Despachador de tools: recibe el nombre + input crudo del modelo y el
+ *  contexto de ejecución, devuelve el tool_result. */
+export type ToolExecutor = (
+  name: string,
+  input: unknown,
+  ctx: AgentToolContext,
+) => Promise<ToolExecResult>
+
 /** Entrada al loop del agente (independiente del proveedor). */
 export interface RunClinicalAgentArgs {
   provider: AgentProvider
@@ -53,6 +74,12 @@ export interface RunClinicalAgentArgs {
   /** Turnos recientes de la conversación (de buildConversationContext). */
   messages: ChatMessage[]
   ctx: AgentToolContext
+  /** Catálogo de tools para esta corrida. Default: CLINICAL_TOOLS (el
+   *  agente de Atención por WhatsApp). El asistente interno pasa su
+   *  propio catálogo (solo-lectura). */
+  tools?: readonly ToolDefinition[]
+  /** Despachador para `tools`. Default: executeClinicalTool. */
+  executeTool?: ToolExecutor
 }
 
 /** Salida del loop: mismo contrato { text, handoff } que generateReply. */
@@ -155,6 +182,21 @@ export const CLINICAL_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'consultar_conocimiento',
+    description:
+      'Busca en la base de conocimiento de la clínica (políticas, procedimientos detallados, preguntas frecuentes) para dudas que NO cubren el catálogo, la agenda ni los anticipos. Úsala antes de escalar cuando la pregunta suene a algo que la clínica ya debería tener documentado. Si no devuelve nada relevante, no inventes la respuesta: dilo y evalúa escalar.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pregunta: {
+          type: 'string',
+          description: 'La pregunta o duda del paciente, en sus propias palabras.',
+        },
+      },
+      required: ['pregunta'],
     },
   },
   {

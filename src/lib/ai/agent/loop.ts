@@ -100,7 +100,7 @@ async function callAnthropic(
         model: args.model,
         system: args.systemPrompt,
         max_tokens: MAX_OUTPUT_TOKENS,
-        tools: CLINICAL_TOOLS,
+        tools: args.tools ?? CLINICAL_TOOLS,
         messages,
       }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -155,9 +155,10 @@ async function runAnthropicAgent(
       return { text, handoff, escalated }
     }
 
+    const executeTool = args.executeTool ?? executeClinicalTool
     const results: ContentBlock[] = []
     for (const tu of toolUses) {
-      const r = await executeClinicalTool(tu.name, tu.input, args.ctx)
+      const r = await executeTool(tu.name, tu.input, args.ctx)
       if (r.escalated) escalated = true
       results.push({
         type: 'tool_result',
