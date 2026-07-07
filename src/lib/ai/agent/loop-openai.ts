@@ -128,6 +128,14 @@ export async function runOpenAiAgent(
     })
 
     const toolCalls = msg.tool_calls ?? []
+    // Telemetría mínima (sin PII: solo nombres de tool, nunca argumentos
+    // ni contenido) — sin esto, un turno donde el modelo "narra" una
+    // acción (agendar_cita, avisar_equipo) sin haberla invocado es
+    // indistinguible a posteriori de uno legítimo; solo se puede inferir
+    // por ausencia de efectos en la BD.
+    console.log(
+      `[clinical agent openai] round=${round} finish_reason=${choice.finish_reason} tools=[${toolCalls.map((t) => t.function.name).join(',')}]`,
+    )
     if (choice.finish_reason !== 'tool_calls' || toolCalls.length === 0) {
       const { text, handoff } = parseGeneration(msg.content?.trim() ?? '')
       return { text, handoff, escalated }
@@ -144,7 +152,11 @@ export async function runOpenAiAgent(
       messages.push({
         role: 'tool',
         tool_call_id: tc.id,
-        content: r.content,
+        // Chat Completions no tiene un campo de error dedicado para
+        // mensajes `role:'tool'` (a diferencia de `is_error` en
+        // Anthropic, ver loop.ts) — reforzamos la señal en el propio
+        // texto para que un fallo no se confunda con un resultado ok.
+        content: r.isError ? `ERROR: ${r.content}` : r.content,
       })
     }
   }

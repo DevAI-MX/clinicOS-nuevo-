@@ -1260,9 +1260,11 @@ export function MessageThread({
               {confirmAction === "delete" ? (
                 <>
                   Esto borrará <strong>permanentemente</strong> la conversación
-                  con <strong>{contactDisplayName}</strong> y{" "}
-                  <strong>todos sus mensajes</strong> de la base de datos. Esta
-                  acción <strong>no se puede deshacer</strong>.
+                  con <strong>{contactDisplayName}</strong>,{" "}
+                  <strong>todos sus mensajes</strong> y{" "}
+                  <strong>su contacto del CRM</strong> (incluyendo citas y
+                  anticipos) de la base de datos. Esta acción{" "}
+                  <strong>no se puede deshacer</strong>.
                 </>
               ) : (
                 <>

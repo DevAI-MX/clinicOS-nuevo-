@@ -13,6 +13,7 @@ import {
 } from './agent'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { zernioSendToConversation } from '@/lib/zernio/client'
+import { isUniqueViolation } from '@/lib/contacts/dedupe'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -218,16 +219,35 @@ export async function dispatchInboundToAiReply(
         conversationId: zernioConversationId,
         text,
       })
-      const { error: msgErr } = await db.from('messages').insert({
-        conversation_id: conversationId,
-        sender_type: 'bot',
-        content_type: 'text',
-        content_text: text,
-        message_id: messageId,
-        status: 'sent',
-      })
-      if (msgErr) {
-        console.error('[ai auto-reply] zernio reply sent but DB insert failed:', msgErr)
+      // El webhook message.sent de Zernio suele llegar ANTES de que este
+      // insert corra, y su echo persiste la fila como 'agent' (ver
+      // processZernioOutboundEcho). Si ya existe, corrige la autoría en
+      // vez de duplicar; el eco puede haber guardado el wamid en vez del
+      // id que nos devolvió el send, así que el match es por contenido
+      // reciente, no por message_id.
+      const echoWindowIso = new Date(Date.now() - 2 * 60_000).toISOString()
+      const { data: echoRows } = await db
+        .from('messages')
+        .update({ sender_type: 'bot' })
+        .eq('conversation_id', conversationId)
+        .eq('sender_type', 'agent')
+        .eq('content_text', text)
+        .gte('created_at', echoWindowIso)
+        .select('id')
+      if (!echoRows || echoRows.length === 0) {
+        const { error: msgErr } = await db.from('messages').insert({
+          conversation_id: conversationId,
+          sender_type: 'bot',
+          content_type: 'text',
+          content_text: text,
+          message_id: messageId,
+          status: 'sent',
+        })
+        // 23505 = el eco ganó la carrera entre nuestro UPDATE y este
+        // INSERT (UNIQUE de la migración 039) — la fila ya existe.
+        if (msgErr && !isUniqueViolation(msgErr)) {
+          console.error('[ai auto-reply] zernio reply sent but DB insert failed:', msgErr)
+        }
       }
       await db
         .from('conversations')

@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   retrieveKnowledge: vi.fn(),
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
+  zernioSendToConversation: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -15,6 +16,12 @@ const h = vi.hoisted(() => ({
     updatePayload: null as Record<string, unknown> | null,
     rpcCalls: [] as { name: string; args: unknown }[],
     dispatchDueAt: null as string | null,
+    // messages table (Zernio branch): rows the echo-relabel UPDATE
+    // matches, inserts attempted, and a forced insert error.
+    messagesEchoRows: [] as { id: string }[],
+    messagesUpdates: [] as Record<string, unknown>[],
+    messagesInserts: [] as Record<string, unknown>[],
+    messagesInsertError: null as { code?: string; message?: string } | null,
   },
 }))
 
@@ -23,9 +30,30 @@ vi.mock('./context', () => ({ buildConversationContext: h.buildConversationConte
 vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
+vi.mock('@/lib/zernio/client', () => ({
+  zernioSendToConversation: h.zernioSendToConversation,
+}))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
+      if (table === 'messages') {
+        return {
+          update: (payload: Record<string, unknown>) => {
+            h.state.messagesUpdates.push(payload)
+            const chain = {
+              eq: () => chain,
+              gte: () => chain,
+              select: () =>
+                Promise.resolve({ data: h.state.messagesEchoRows, error: null }),
+            }
+            return chain
+          },
+          insert: (payload: Record<string, unknown>) => {
+            h.state.messagesInserts.push(payload)
+            return Promise.resolve({ error: h.state.messagesInsertError })
+          },
+        }
+      }
       if (table === 'automations') {
         // .select().eq().eq().in().limit() → active auto-responders
         const chain = {
@@ -282,5 +310,53 @@ describe('dispatchInboundToAiReply — handoff', () => {
     expect(h.engineSendText).not.toHaveBeenCalled()
     expect(h.state.updatePayload).toEqual({ ai_autoreply_disabled: true })
     expect(h.state.rpcCalls).toHaveLength(0)
+  })
+})
+
+// El webhook message.sent de Zernio compite con el propio insert del
+// bot y puede persistir la respuesta primero (como 'agent'). Ver
+// migración 039 y processZernioOutboundEcho.
+describe('dispatchInboundToAiReply — zernio echo dedupe', () => {
+  const ZARGS = { ...ARGS, zernioConversationId: 'zconv-1' }
+
+  beforeEach(() => {
+    h.zernioSendToConversation.mockResolvedValue({ messageId: 'wamid.1' })
+    h.state.messagesEchoRows = []
+    h.state.messagesUpdates = []
+    h.state.messagesInserts = []
+    h.state.messagesInsertError = null
+  })
+
+  it('inserts the bot row when no echo landed first', async () => {
+    await dispatchInboundToAiReply(ZARGS)
+    expect(h.zernioSendToConversation).toHaveBeenCalledWith({
+      conversationId: 'zconv-1',
+      text: 'Hello!',
+    })
+    expect(h.state.messagesInserts).toHaveLength(1)
+    expect(h.state.messagesInserts[0]).toMatchObject({
+      sender_type: 'bot',
+      content_text: 'Hello!',
+      message_id: 'wamid.1',
+    })
+  })
+
+  it("relabels the echo's 'agent' row to 'bot' instead of inserting a duplicate", async () => {
+    h.state.messagesEchoRows = [{ id: 'echo-row-1' }]
+    await dispatchInboundToAiReply(ZARGS)
+    expect(h.state.messagesUpdates).toContainEqual({ sender_type: 'bot' })
+    expect(h.state.messagesInserts).toHaveLength(0)
+  })
+
+  it('treats a unique violation on insert as "already persisted", not an error', async () => {
+    h.state.messagesInsertError = { code: '23505', message: 'duplicate key' }
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ZARGS)
+      expect(h.state.messagesInserts).toHaveLength(1)
+      expect(errSpy).not.toHaveBeenCalled()
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 })

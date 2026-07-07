@@ -124,6 +124,9 @@ export function AiKnowledgeCard({
   };
 
   const remove = async (id: string) => {
+    if (!window.confirm('Delete this knowledge document permanently? The agent will no longer be able to retrieve it.')) {
+      return;
+    }
     try {
       const res = await fetch(`/api/ai/knowledge/${id}`, { method: 'DELETE' });
       if (res.ok) {

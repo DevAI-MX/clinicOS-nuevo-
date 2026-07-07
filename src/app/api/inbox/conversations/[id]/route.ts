@@ -1,10 +1,17 @@
 // ============================================================
 // DELETE /api/inbox/conversations/{id}
 //
-// "Eliminar conversación": borra la conversación por completo. La FK
-// ON DELETE CASCADE de `messages` y `message_reactions` arrastra todo
-// el historial. Acción destructiva e irreversible — el panel la
-// confirma con advertencia explícita de borrado permanente.
+// "Eliminar conversación": borra el CONTACTO completo, no solo la
+// conversación — así el lead/paciente también desaparece del CRM
+// (era el pedido explícito: antes sobrevivía como registro huérfano
+// en /contacts). messages, message_reactions, contact_tags,
+// contact_custom_values, contact_notes, appointments y payments caen
+// por ON DELETE CASCADE (migraciones 001, 009, 031); deals y
+// broadcast_recipients sobreviven con su contact_id/conversation_id
+// en NULL (mismo patrón que la migración 004: preserva el historial
+// del Embudo IA y de broadcasts en vez de borrarlo en silencio).
+// Acción destructiva e irreversible — el panel la confirma con
+// advertencia explícita de borrado permanente.
 //
 // Auth: sesión del dashboard. Verificamos pertenencia con el cliente
 // RLS y borramos con service-role (borrado + cascada garantizados).
@@ -33,21 +40,21 @@ export async function DELETE(
     // RLS: sólo conversaciones de la cuenta del usuario. Id ajeno → 404.
     const { data: conv, error: convErr } = await supabase
       .from('conversations')
-      .select('id')
+      .select('id, contact_id')
       .eq('id', id)
       .maybeSingle()
     if (convErr || !conv) {
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
     }
 
-    // Borrado con service-role — messages + message_reactions caen por
-    // ON DELETE CASCADE (migraciones 001 y 009).
+    // Borrado con service-role — borrar el contacto arrastra la
+    // conversación (y todo lo demás) por ON DELETE CASCADE.
     const { error: delErr } = await supabaseAdmin()
-      .from('conversations')
+      .from('contacts')
       .delete()
-      .eq('id', id)
+      .eq('id', conv.contact_id)
     if (delErr) {
-      console.error('[inbox/delete] error deleting conversation:', delErr)
+      console.error('[inbox/delete] error deleting contact:', delErr)
       return NextResponse.json(
         { error: 'Failed to delete conversation' },
         { status: 500 },

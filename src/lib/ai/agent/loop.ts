@@ -150,6 +150,11 @@ async function runAnthropicAgent(
       (b): b is ToolUseBlock => b.type === 'tool_use',
     )
 
+    // Telemetría mínima (sin PII: solo nombres de tool) — ver la nota
+    // equivalente en loop-openai.ts.
+    console.log(
+      `[clinical agent anthropic] round=${round} stop_reason=${data.stop_reason} tools=[${toolUses.map((t) => t.name).join(',')}]`,
+    )
     if (data.stop_reason !== 'tool_use' || toolUses.length === 0) {
       const { text, handoff } = parseGeneration(collectText(blocks))
       return { text, handoff, escalated }

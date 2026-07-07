@@ -42,3 +42,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# datos de clientes / conversaciones reales — nunca al repo
+Clinica_Oranza.md
+informacion_ventas_agentes.md
+conversacion-*.json

@@ -133,19 +133,63 @@ const ORANZA_PROCEDURES = [
     duration_minutes: 30,
     sales_notes: 'Se indica después de la valoración; se paga aparte de la consulta.',
   },
-  ...['Limpieza dental', 'Resinas', 'Endodoncia', 'Coronas', 'Diseño de sonrisa'].map(
-    (name) => ({
-      name,
-      category: 'dental',
-      description: null,
-      price_min: null,
-      price_max: null,
-      deposit_amount: null,
-      duration_minutes: 60,
-      sales_notes:
-        'Cotización personalizada tras la valoración presencial — no dar precio por WhatsApp.',
-    }),
-  ),
+  {
+    name: 'Tratamiento integral ATM',
+    category: 'atm',
+    description:
+      'Abordaje completo del trastorno temporomandibular: ajustes cada 8-10 días y guardas.',
+    price_min: null,
+    price_max: null,
+    deposit_amount: null,
+    duration_minutes: 60,
+    sales_notes:
+      'Se cotiza tras la valoración ATM — no dar precio por WhatsApp. MSI disponible si supera $12,000.',
+  },
+  {
+    name: 'Hipnoterapia clínica',
+    category: 'atm',
+    description:
+      'Psicoterapia ericksoniana, segunda fase del tratamiento ATM para apretamiento por causas emocionales.',
+    price_min: null,
+    price_max: null,
+    deposit_amount: null,
+    duration_minutes: 60,
+    sales_notes:
+      'Se cotiza tras la valoración ATM — no dar precio por WhatsApp. No se agenda directo: primero valoración.',
+  },
+  {
+    name: 'Cirugía maxilofacial (terceros molares)',
+    category: 'dental',
+    description:
+      'Extracción de terceros molares (muelas del juicio) por el cirujano maxilofacial del equipo.',
+    price_min: null,
+    price_max: null,
+    deposit_amount: 5000,
+    duration_minutes: 60,
+    sales_notes:
+      'NO se agenda directo: primero valoración ($700, anticipo $350). El anticipo de $5,000 aplica SOLO para apartar la fecha de una cirugía ya indicada por el doctor.',
+  },
+  ...[
+    'Limpieza dental',
+    'Curaciones',
+    'Resinas',
+    'Endodoncia',
+    'Coronas',
+    'Carillas (Emax / Zirconia)',
+    'Extracciones',
+    'Prótesis dental',
+    'Diseño de sonrisa',
+  ].map((name) => ({
+    name,
+    category: 'dental',
+    description: null,
+    price_min: null,
+    price_max: null,
+    deposit_amount: null,
+    duration_minutes: 60,
+    sales_notes:
+      'Cotización personalizada tras la valoración presencial — no dar precio por WhatsApp.',
+  })),
 ]
 
 // Horario real: lunes (1) a viernes (5), 16:00–20:00.

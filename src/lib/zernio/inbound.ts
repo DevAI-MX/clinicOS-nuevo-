@@ -520,6 +520,11 @@ async function processZernioOutboundEcho(payload: ZernioWebhookEvent): Promise<v
     created_at: mapped.createdAtIso,
   })
   if (msgError) {
+    // 23505 = el camino de envío (panel/bot) ganó la carrera y ya
+    // persistió esta fila entre nuestro SELECT y este INSERT — el
+    // UNIQUE (conversation_id, message_id) de la migración 039 es el
+    // árbitro atómico que el SELECT previo no puede ser.
+    if (isUniqueViolation(msgError)) return
     console.error('[zernio] error inserting outbound echo:', msgError)
     return
   }

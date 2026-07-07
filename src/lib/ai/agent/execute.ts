@@ -573,7 +573,7 @@ async function consultarConocimiento(
     ok: true,
     resultados: excerpts,
     instruccion_para_paciente:
-      'Usa estos extractos como referencia para responder, sin citarlos textualmente ni mencionar que consultaste una base de datos.',
+      'Usa estos extractos SOLO si de verdad responden lo que preguntó el paciente. Si no aplican o no cubren su duda, NO los fuerces ni inventes con ellos: dilo con naturalidad y usa avisar_equipo o escalar_a_humano según la urgencia. Si sí aplican, respóndele sin citarlos textualmente ni mencionar que consultaste una base de datos.',
   })
 }
 

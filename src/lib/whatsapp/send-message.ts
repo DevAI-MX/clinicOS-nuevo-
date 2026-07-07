@@ -29,6 +29,7 @@ import {
 } from '@/lib/whatsapp/meta-api';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
+import { isUniqueViolation } from '@/lib/contacts/dedupe';
 import {
   sanitizePhoneForMeta,
   isValidE164,
@@ -525,7 +526,7 @@ async function sendViaZernioConversation(
   }
 
   // Persiste el mensaje enviado (mismo shape que el camino de Meta).
-  const { data: messageRecord, error: msgError } = await db
+  let { data: messageRecord, error: msgError } = await db
     .from('messages')
     .insert({
       conversation_id: conversationId,
@@ -539,11 +540,23 @@ async function sendViaZernioConversation(
     .select()
     .single();
 
-  if (msgError) {
+  if (msgError && isUniqueViolation(msgError)) {
+    // El echo message.sent de Zernio ganó la carrera y ya persistió
+    // esta fila (también como 'agent') — reúsala en vez de fallar.
+    // UNIQUE (conversation_id, message_id), migración 039.
+    ({ data: messageRecord, error: msgError } = await db
+      .from('messages')
+      .select()
+      .eq('conversation_id', conversationId)
+      .eq('message_id', zernioMessageId)
+      .single());
+  }
+
+  if (msgError || !messageRecord) {
     console.error('[send-message] Zernio: error inserting sent message:', msgError);
     throw new SendMessageError(
       'db_error',
-      `Mensaje enviado por Zernio pero no se guardó en la base: ${msgError.message}`,
+      `Mensaje enviado por Zernio pero no se guardó en la base: ${msgError?.message ?? 'row not found'}`,
       500,
     );
   }
