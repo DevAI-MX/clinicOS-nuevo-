@@ -21,8 +21,11 @@
 //     send interactive messages that have no Zernio mapping yet, so a
 //     run could never advance. Automations + AI auto-reply run for
 //     every inbound instead (no flow-consumption suppression).
-//   * Media attachments store Zernio's URL directly (no media proxy);
-//     those URLs may expire for Meta-hosted files.
+//   * Media attachments are re-hosted into the public `chat-media`
+//     bucket at ingest (rehostInboundMedia) because Zernio's URLs
+//     expire for Meta-hosted files — the panel was rendering gray
+//     broken images once the link died. On re-host failure the
+//     ephemeral URL is stored as a best effort (old behavior).
 // ============================================================
 
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
@@ -31,6 +34,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { rehostInboundMedia } from '@/lib/storage/rehost-inbound-media'
 import { resolveZernioWacrmAccount } from './config'
 
 // ============================================================
@@ -373,12 +377,20 @@ async function processZernioInboundMessage(payload: ZernioWebhookEvent): Promise
     .eq('sender_type', 'customer')
   const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
 
+  // La URL de Zernio expira; copiamos el archivo a nuestro bucket antes
+  // de persistir para que el panel (y la visión en re-corridas tardías)
+  // siempre tengan una URL viva. Si falla, se guarda la efímera.
+  const mediaUrl = mapped.mediaUrl
+    ? ((await rehostInboundMedia({ db, accountId, url: mapped.mediaUrl })) ??
+      mapped.mediaUrl)
+    : null
+
   const { error: msgError } = await db.from('messages').insert({
     conversation_id: conversation.id,
     sender_type: 'customer',
     content_type: mapped.contentType,
     content_text: mapped.contentText,
-    media_url: mapped.mediaUrl,
+    media_url: mediaUrl,
     message_id: mapped.storedMessageId,
     status: 'delivered',
     created_at: mapped.createdAtIso,
@@ -541,12 +553,23 @@ async function processZernioOutboundEcho(payload: ZernioWebhookEvent): Promise<v
     if (recentBot) return
   }
 
+  // Mismo re-hospedaje que el camino inbound: el eco puede traer un
+  // adjunto (foto enviada desde el teléfono del doctor) cuya URL de
+  // Zernio también expira.
+  const mediaUrl = mapped.mediaUrl
+    ? ((await rehostInboundMedia({
+        db,
+        accountId: account.accountId,
+        url: mapped.mediaUrl,
+      })) ?? mapped.mediaUrl)
+    : null
+
   const { error: msgError } = await db.from('messages').insert({
     conversation_id: conversation.id,
     sender_type: 'agent',
     content_type: mapped.contentType,
     content_text: mapped.contentText,
-    media_url: mapped.mediaUrl,
+    media_url: mediaUrl,
     message_id: mapped.storedMessageId,
     status: 'sent',
     created_at: mapped.createdAtIso,

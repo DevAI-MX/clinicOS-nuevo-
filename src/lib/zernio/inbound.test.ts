@@ -59,6 +59,15 @@ vi.mock('./config', () => ({
     Promise.resolve({ accountId: 'acc-1', userId: 'user-1' }),
 }))
 
+// Re-hospedaje de media: se prueba a fondo en
+// storage/rehost-inbound-media.test.ts; aquí solo el cableado.
+const rehostMock = vi.hoisted(() => ({
+  fn: vi.fn(() => Promise.resolve<string | null>('https://supa.example/rehosted.jpg')),
+}))
+vi.mock('@/lib/storage/rehost-inbound-media', () => ({
+  rehostInboundMedia: rehostMock.fn,
+}))
+
 import {
   isValidStatusTransition,
   mapZernioAttachmentType,
@@ -301,6 +310,38 @@ describe('processZernioOutboundEcho — dedupe contra envíos del bot', () => {
     ]
     await processZernioEvent(sentEvent())
     expect(h.inserts.filter((i) => i.table === 'messages')).toHaveLength(0)
+  })
+
+  it('persiste la URL re-hospedada del adjunto (la de Zernio expira)', async () => {
+    rehostMock.fn.mockResolvedValueOnce('https://supa.example/rehosted.jpg')
+    await processZernioEvent(
+      sentEvent({
+        text: null,
+        attachments: [{ type: 'image', url: 'https://cdn.zernio.example/efimera.jpg' }],
+      }),
+    )
+    const inserted = h.inserts.filter((i) => i.table === 'messages')
+    expect(inserted).toHaveLength(1)
+    expect(inserted[0].row.media_url).toBe('https://supa.example/rehosted.jpg')
+    expect(rehostMock.fn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 'acc-1',
+        url: 'https://cdn.zernio.example/efimera.jpg',
+      }),
+    )
+  })
+
+  it('conserva la URL original cuando el re-hospedaje falla', async () => {
+    rehostMock.fn.mockResolvedValueOnce(null)
+    await processZernioEvent(
+      sentEvent({
+        text: null,
+        attachments: [{ type: 'image', url: 'https://cdn.zernio.example/efimera.jpg' }],
+      }),
+    )
+    const inserted = h.inserts.filter((i) => i.table === 'messages')
+    expect(inserted).toHaveLength(1)
+    expect(inserted[0].row.media_url).toBe('https://cdn.zernio.example/efimera.jpg')
   })
 })
 
