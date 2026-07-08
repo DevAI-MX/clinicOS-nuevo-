@@ -4,7 +4,12 @@ import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { retrieveKnowledge } from './knowledge'
 import { generateReply } from './generate'
-import { buildSystemPrompt, aiDebounceWindowMs, aiDebounceMaxWaitMs } from './defaults'
+import {
+  buildSystemPrompt,
+  aiDebounceWindowMs,
+  aiDebounceMaxWaitMs,
+  HANDOFF_SENTINEL,
+} from './defaults'
 import { latestUserMessage } from './query'
 import {
   runClinicalAgent,
@@ -307,7 +312,14 @@ export async function dispatchInboundToAiReply(
     }
 
     try {
-      await sendReply()
+      await sendAgentReply(db, {
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        zernioConversationId,
+        text,
+      })
     } catch (sendErr) {
       // El envío falló (API key de Zernio revocada, Meta caído, red…):
       // el agente ya "respondió" pero el paciente no recibió nada. La
@@ -324,83 +336,277 @@ export async function dispatchInboundToAiReply(
       })
       return
     }
-
-    async function sendReply(): Promise<void> {
-      if (!zernioConversationId) {
-        await engineSendText({
-          accountId,
-          userId: configOwnerUserId,
-          conversationId,
-          contactId,
-          text,
-        })
-        return
-      }
-      // Vino por Zernio: responde en la MISMA conversación de inbox
-      // (texto libre dentro de la ventana de 24h) y persiste el mensaje
-      // del bot nosotros mismos — engineSendText es por-teléfono y la
-      // API de Zernio no acepta ese modo para WhatsApp.
-      const { messageId } = await zernioSendToConversation({
-        conversationId: zernioConversationId,
-        text,
-      })
-      // El webhook message.sent de Zernio suele llegar ANTES de que este
-      // insert corra, y su echo persiste la fila como 'agent' (ver
-      // processZernioOutboundEcho). Si ya existe, corrige la autoría en
-      // vez de duplicar; el eco puede haber guardado el wamid en vez del
-      // id que nos devolvió el send, así que el match es por contenido
-      // reciente, no por message_id.
-      const echoWindowIso = new Date(Date.now() - 2 * 60_000).toISOString()
-      const { data: echoRows } = await db
-        .from('messages')
-        .update({ sender_type: 'bot' })
-        .eq('conversation_id', conversationId)
-        .eq('sender_type', 'agent')
-        .eq('content_text', text)
-        .gte('created_at', echoWindowIso)
-        .select('id')
-      if (!echoRows || echoRows.length === 0) {
-        const { error: msgErr } = await db.from('messages').insert({
-          conversation_id: conversationId,
-          sender_type: 'bot',
-          content_type: 'text',
-          content_text: text,
-          message_id: messageId,
-          status: 'sent',
-        })
-        // 23505 = el eco ganó la carrera entre nuestro UPDATE y este
-        // INSERT (UNIQUE de la migración 039) — la fila ya existe.
-        if (msgErr && !isUniqueViolation(msgErr)) {
-          console.error('[ai auto-reply] zernio reply sent but DB insert failed:', msgErr)
-        }
-        // Barrido final: si el eco aterrizó ENTRE el relabel de arriba y
-        // este insert, quedó una fila 'agent' gemela con otro message_id
-        // (el UNIQUE de 039 no la ve) y el panel mostraba cada respuesta
-        // del bot dos veces. Nuestra fila 'bot' ya existe; la gemela
-        // sobra. La otra dirección (eco DESPUÉS del insert) la corta el
-        // dedupe por contenido de processZernioOutboundEcho.
-        const { error: sweepErr } = await db
-          .from('messages')
-          .delete()
-          .eq('conversation_id', conversationId)
-          .eq('sender_type', 'agent')
-          .eq('content_text', text)
-          .gte('created_at', echoWindowIso)
-        if (sweepErr) {
-          console.error('[ai auto-reply] duplicate-echo sweep failed:', sweepErr)
-        }
-      }
-      await db
-        .from('conversations')
-        .update({
-          last_message_text: text,
-          last_message_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', conversationId)
-    }
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)
+  }
+}
+
+interface SendAgentReplyArgs {
+  accountId: string
+  conversationId: string
+  contactId: string
+  configOwnerUserId: string
+  zernioConversationId: string | null
+  text: string
+}
+
+/**
+ * Envía la respuesta del agente al paciente (Meta/engine o Zernio) y la
+ * persiste como mensaje del bot. Compartido por el auto-reply del
+ * inbound y por el retome al reactivar el modo IA. Lanza si el envío
+ * falla — el caller decide cómo avisar.
+ */
+async function sendAgentReply(
+  db: SupabaseClient,
+  args: SendAgentReplyArgs,
+): Promise<void> {
+  const {
+    accountId,
+    conversationId,
+    contactId,
+    configOwnerUserId,
+    zernioConversationId,
+    text,
+  } = args
+  if (!zernioConversationId) {
+    await engineSendText({
+      accountId,
+      userId: configOwnerUserId,
+      conversationId,
+      contactId,
+      text,
+    })
+    return
+  }
+  // Vino por Zernio: responde en la MISMA conversación de inbox
+  // (texto libre dentro de la ventana de 24h) y persiste el mensaje
+  // del bot nosotros mismos — engineSendText es por-teléfono y la
+  // API de Zernio no acepta ese modo para WhatsApp.
+  const { messageId } = await zernioSendToConversation({
+    conversationId: zernioConversationId,
+    text,
+  })
+  // El webhook message.sent de Zernio suele llegar ANTES de que este
+  // insert corra, y su echo persiste la fila como 'agent' (ver
+  // processZernioOutboundEcho). Si ya existe, corrige la autoría en
+  // vez de duplicar; el eco puede haber guardado el wamid en vez del
+  // id que nos devolvió el send, así que el match es por contenido
+  // reciente, no por message_id.
+  const echoWindowIso = new Date(Date.now() - 2 * 60_000).toISOString()
+  const { data: echoRows } = await db
+    .from('messages')
+    .update({ sender_type: 'bot' })
+    .eq('conversation_id', conversationId)
+    .eq('sender_type', 'agent')
+    .eq('content_text', text)
+    .gte('created_at', echoWindowIso)
+    .select('id')
+  if (!echoRows || echoRows.length === 0) {
+    const { error: msgErr } = await db.from('messages').insert({
+      conversation_id: conversationId,
+      sender_type: 'bot',
+      content_type: 'text',
+      content_text: text,
+      message_id: messageId,
+      status: 'sent',
+    })
+    // 23505 = el eco ganó la carrera entre nuestro UPDATE y este
+    // INSERT (UNIQUE de la migración 039) — la fila ya existe.
+    if (msgErr && !isUniqueViolation(msgErr)) {
+      console.error('[ai auto-reply] zernio reply sent but DB insert failed:', msgErr)
+    }
+    // Barrido final: si el eco aterrizó ENTRE el relabel de arriba y
+    // este insert, quedó una fila 'agent' gemela con otro message_id
+    // (el UNIQUE de 039 no la ve) y el panel mostraba cada respuesta
+    // del bot dos veces. Nuestra fila 'bot' ya existe; la gemela
+    // sobra. La otra dirección (eco DESPUÉS del insert) la corta el
+    // dedupe por contenido de processZernioOutboundEcho.
+    const { error: sweepErr } = await db
+      .from('messages')
+      .delete()
+      .eq('conversation_id', conversationId)
+      .eq('sender_type', 'agent')
+      .eq('content_text', text)
+      .gte('created_at', echoWindowIso)
+    if (sweepErr) {
+      console.error('[ai auto-reply] duplicate-echo sweep failed:', sweepErr)
+    }
+  }
+  await db
+    .from('conversations')
+    .update({
+      last_message_text: text,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId)
+}
+
+export interface ResumeDispatchArgs {
+  accountId: string
+  conversationId: string
+  contactId: string
+  /** Usuario del panel que reactivó el modo IA — audita el envío. */
+  configOwnerUserId: string
+  zernioConversationId?: string | null
+}
+
+/**
+ * Retome de contexto al reactivar el modo IA desde el panel.
+ *
+ * Cuando una conversación estuvo en modo humano y el equipo vuelve a
+ * encender la IA, el agente relee el hilo completo (incluidos los
+ * mensajes que el equipo escribió mientras la IA estaba en pausa) y
+ * decide si quedó algo pendiente con el paciente: una duda a medias,
+ * un comprobante sin atender, una cita sin cerrar. Si lo hay, manda UN
+ * mensaje retomándolo; si no, contesta el centinela de handoff y aquí
+ * se descarta en silencio — sin aviso al equipo, que acaba de soltar
+ * el hilo y conoce su estado.
+ *
+ * Solo corre para cuentas con agente clínico. Reutiliza el debounce
+ * compartido (ai_dispatch_due_at) para que un doble click del switch o
+ * un inbound simultáneo no produzcan dos respuestas. Nunca lanza.
+ */
+export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> {
+  const { accountId, conversationId, contactId, configOwnerUserId } = args
+  const zernioConversationId = args.zernioConversationId ?? null
+
+  try {
+    const db = supabaseAdmin()
+
+    const config = await loadAiConfig(db, accountId)
+    if (!config || !config.autoReplyEnabled || !config.clinicalAgentEnabled) return
+
+    const { data: conv, error: convErr } = await db
+      .from('conversations')
+      .select('assigned_agent_id, ai_autoreply_disabled')
+      .eq('id', conversationId)
+      .maybeSingle()
+    if (convErr || !conv) return
+    if (conv.assigned_agent_id || conv.ai_autoreply_disabled) return
+
+    const wonDispatch = await debounceAndClaim(db, conversationId)
+    if (!wonDispatch) return
+
+    const { data: fresh, error: freshErr } = await db
+      .from('conversations')
+      .select('assigned_agent_id, ai_autoreply_disabled')
+      .eq('id', conversationId)
+      .maybeSingle()
+    if (freshErr || !fresh || fresh.assigned_agent_id || fresh.ai_autoreply_disabled) return
+
+    const messages = await buildConversationContext(db, conversationId)
+    // Sin mensajes del paciente no hay nada que retomar.
+    if (!messages.some((m) => m.role === 'user')) return
+
+    const { data: contact } = await db
+      .from('contacts')
+      .select('name')
+      .eq('id', contactId)
+      .maybeSingle()
+    const contactName = (contact?.name as string | null) ?? null
+    const timezone = clinicTimezone()
+    const now = new Date()
+
+    const stateLines = await buildPatientStateLines({
+      db,
+      accountId,
+      contactId,
+      timezone,
+      now,
+    })
+
+    // Una imagen sin atender (p. ej. un comprobante que llegó justo
+    // antes de pasar a modo humano) también cuenta como pendiente: el
+    // paso de visión la describe igual que en el flujo normal.
+    const imageNotes = await buildRecentImageNotes({
+      db,
+      conversationId,
+      provider: config.provider,
+      apiKey: config.apiKey,
+      model: config.model,
+      now,
+    })
+
+    const resumeNote = `[Nota automática del sistema — el paciente NO escribió esto: la conversación estuvo en MODO HUMANO (la atendió el equipo desde el panel) y acaban de reactivar el modo IA. Relee los últimos mensajes del hilo — sobre todo los 3 más recientes, que pueden incluir respuestas escritas por el equipo. Si el último mensaje del paciente quedó sin respuesta o quedó un pendiente abierto (una duda a medias, un pago por confirmar, una cita sin cerrar), retómalo AHORA con un solo mensaje breve y cálido que continúe lo que el equipo ya le dijo — sin contradecirlo, sin repetir lo que ya le respondieron y sin saludar como si fuera una conversación nueva. Si no hay nada pendiente que retomar, responde exactamente ${HANDOFF_SENTINEL} y nada más: es una señal interna y al paciente no le llegará nada.]`
+
+    const agentMessages = [
+      ...messages,
+      ...(imageNotes.length > 0
+        ? [{ role: 'user' as const, content: imageNotes.join('\n\n') }]
+        : []),
+      { role: 'user' as const, content: resumeNote },
+    ]
+
+    const systemPrompt = buildClinicalSystemPrompt({
+      userPrompt: config.systemPrompt,
+      contactName,
+      timezone,
+      now,
+      stateLines,
+    })
+
+    const result = await runClinicalAgent({
+      provider: config.provider,
+      apiKey: config.apiKey,
+      model: config.model,
+      systemPrompt,
+      messages: agentMessages,
+      ctx: {
+        db,
+        accountId,
+        contactId,
+        conversationId,
+        userId: configOwnerUserId,
+        contactName,
+        timezone,
+        now,
+        embeddingsApiKey: config.embeddingsApiKey,
+      },
+    })
+
+    // Handoff aquí significa "nada que retomar": descarte silencioso.
+    if (result.handoff || !result.text) return
+
+    // El modo pudo volver a cambiar mientras el modelo generaba.
+    const { data: gate, error: gateErr } = await db
+      .from('conversations')
+      .select('assigned_agent_id, ai_autoreply_disabled')
+      .eq('id', conversationId)
+      .maybeSingle()
+    if (gateErr || !gate || gate.assigned_agent_id || gate.ai_autoreply_disabled) return
+
+    const { data: claimed, error: claimErr } = await db.rpc('claim_ai_reply_slot', {
+      conversation_id: conversationId,
+      max_replies:
+        config.autoReplyMaxPerConversation > 0
+          ? config.autoReplyMaxPerConversation
+          : 2147483647,
+    })
+    if (claimErr || claimed !== true) return
+
+    try {
+      await sendAgentReply(db, {
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        zernioConversationId,
+        text: result.text,
+      })
+    } catch (sendErr) {
+      console.error('[ai resume] outbound send failed:', sendErr)
+      await notifyTeamOnce(db, {
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        title: 'No se pudo enviar la respuesta del agente',
+        body: 'tenía un pendiente y el agente intentó retomarlo al reactivar el modo IA, pero el envío por WhatsApp falló. Revisa la conexión con Zernio (API key / suscripción) y respóndele tú desde el panel.',
+      })
+    }
+  } catch (err) {
+    console.error('[ai resume] dispatch failed:', err)
   }
 }
 

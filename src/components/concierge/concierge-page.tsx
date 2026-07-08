@@ -4,10 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
-import { Plus, Sparkles } from 'lucide-react';
+import { Plus, Sparkles, Volume2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import {
   uploadAccountMedia,
   deleteAccountMedia,
@@ -36,6 +37,9 @@ import { useTts } from './use-tts';
 //     en voz alta aunque el turno fuera tecleado, para escucharla
 //     mientras se ve la pantalla). Los turnos tecleados sin navegación
 //     son solo texto.
+//   * Switch "Voz" del header: con él encendido, TODAS las respuestas
+//     se leen en voz alta (también las de turnos tecleados), sin
+//     encadenar el modo conversación. Persiste en localStorage.
 //   * Navegación autónoma: un bloque 'navegacion' en vivo hace
 //     router.push — el agente puede llevar al usuario a la sección.
 // ============================================================
@@ -49,6 +53,8 @@ const ACCEPTED_ATTACHMENT_MIMES = new Set([
 ]);
 /** Silencio sostenido que cierra un turno de voz en modo conversación. */
 const VOICE_SILENCE_STOP_MS = 2000;
+/** localStorage: switch "leer todas las respuestas en voz alta". */
+const VOICE_REPLIES_KEY = 'concierge:voz-respuestas';
 
 let attachmentSeq = 0;
 
@@ -63,6 +69,16 @@ export function ConciergePage() {
   const [input, setInput] = useState('');
   const [staged, setStaged] = useState<StagedAttachment[]>([]);
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  // Switch "Voz": leer TODAS las respuestas en voz alta. Se hidrata en
+  // un efecto (no en el initializer) para no divergir del SSR.
+  const [voiceReplies, setVoiceReplies] = useState(false);
+  useEffect(() => {
+    try {
+      setVoiceReplies(localStorage.getItem(VOICE_REPLIES_KEY) === '1');
+    } catch {
+      // sin localStorage (modo privado estricto) el switch arranca apagado
+    }
+  }, []);
 
   const recorder = useRecorder();
   const tts = useTts();
@@ -72,6 +88,16 @@ export function ConciergePage() {
   // Extraídas del hook para poder listarlas como deps sin arrastrar el
   // objeto entero (su identidad cambia en cada render).
   const { loadSession, reset, send } = chat;
+
+  const toggleVoiceReplies = (on: boolean) => {
+    setVoiceReplies(on);
+    try {
+      localStorage.setItem(VOICE_REPLIES_KEY, on ? '1' : '0');
+    } catch {
+      // sin persistencia el switch vive solo esta sesión
+    }
+    if (!on) tts.stop(); // apagarlo silencia lo que esté sonando
+  };
 
   // Refs para los closures del ciclo de voz (TTS onEnd → re-escuchar):
   // siempre leen el valor vigente, no el del render que los creó.
@@ -215,9 +241,10 @@ export function ConciergePage() {
     }
     void refreshSessions();
 
-    // Voz de respuesta: solo en turnos dictados por voz, o cuando el
-    // agente navegó de sección (se escucha mientras se ve la pantalla).
-    if (reply && (opts.via === 'voz' || result.navigated)) {
+    // Voz de respuesta: turnos dictados por voz, navegación de sección
+    // (se escucha mientras se ve la pantalla), o el switch "Voz" del
+    // header encendido (todas las respuestas habladas).
+    if (reply && (opts.via === 'voz' || result.navigated || voiceReplies)) {
       tts.speak(reply.id, reply.text, {
         onEnd: () => {
           // Modo conversación: al terminar de hablar, vuelve a escuchar.
@@ -363,6 +390,18 @@ export function ConciergePage() {
             </span>
           </div>
           <div className="flex items-center gap-1">
+            <label
+              className="mr-2 flex cursor-pointer items-center gap-1.5"
+              title="Leer todas las respuestas en voz alta"
+            >
+              <Volume2
+                className={`h-3.5 w-3.5 ${voiceReplies ? 'text-primary' : 'text-muted-foreground'}`}
+              />
+              <span className="hidden text-xs text-muted-foreground sm:inline">
+                Voz
+              </span>
+              <Switch checked={voiceReplies} onCheckedChange={toggleVoiceReplies} />
+            </label>
             <Button
               variant="ghost"
               size="sm"

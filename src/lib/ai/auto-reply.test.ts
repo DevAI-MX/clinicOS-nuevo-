@@ -200,7 +200,7 @@ vi.mock('./admin-client', () => ({
   }),
 }))
 
-import { dispatchInboundToAiReply } from './auto-reply'
+import { dispatchInboundToAiReply, dispatchAiResume } from './auto-reply'
 
 const ARGS = {
   accountId: 'acct-1',
@@ -606,5 +606,129 @@ describe('dispatchInboundToAiReply — multimedia (comprobantes)', () => {
     expect(h.runClinicalAgent.mock.calls[0][0].messages).toEqual([
       { role: 'user', content: 'hi' },
     ])
+  })
+})
+
+// Al reactivar el modo IA desde el panel, el agente relee el hilo (los
+// mensajes del equipo en modo humano incluidos) y decide si quedó un
+// pendiente que retomar con el paciente — o no envía nada.
+describe('dispatchAiResume — retome al reactivar el modo IA', () => {
+  beforeEach(() => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: true }))
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'user', content: 'entonces me confirman el pago?' },
+      { role: 'assistant', content: 'déjame revisarlo y te digo' },
+    ])
+  })
+
+  it('corre el agente con la nota de reactivación como último turno y envía', async () => {
+    await dispatchAiResume(ARGS)
+    expect(h.runClinicalAgent).toHaveBeenCalledTimes(1)
+    const msgs = h.runClinicalAgent.mock.calls[0][0].messages as {
+      role: string
+      content: string
+    }[]
+    const last = msgs[msgs.length - 1]
+    expect(last.role).toBe('user')
+    expect(last.content).toContain('MODO HUMANO')
+    expect(last.content).toContain('[[HANDOFF]]')
+    // El transcript original va intacto antes de la nota.
+    expect(msgs.slice(0, -1)).toEqual([
+      { role: 'user', content: 'entonces me confirman el pago?' },
+      { role: 'assistant', content: 'déjame revisarlo y te digo' },
+    ])
+    // Consume un slot de respuesta como cualquier envío del agente.
+    expect(h.state.rpcCalls).toContainEqual({
+      name: 'claim_ai_reply_slot',
+      args: { conversation_id: 'conv-1', max_replies: 3 },
+    })
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conv-1', text: 'Hola!' }),
+    )
+  })
+
+  it('handoff = "nada que retomar": no envía y NO avisa al equipo', async () => {
+    h.runClinicalAgent.mockResolvedValue({ text: '', handoff: true, escalated: false })
+    await dispatchAiResume(ARGS)
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    // A diferencia del inbound, aquí el silencio es la salida feliz: el
+    // equipo acaba de soltar el hilo y conoce su estado.
+    expect(h.state.notifications).toHaveLength(0)
+  })
+
+  it('inyecta las notas de visión ANTES de la nota de reactivación (comprobante sin atender)', async () => {
+    h.buildRecentImageNotes.mockResolvedValue([
+      '[Nota automática del sistema] Es comprobante de pago: sí',
+    ])
+    await dispatchAiResume(ARGS)
+    const msgs = h.runClinicalAgent.mock.calls[0][0].messages as {
+      role: string
+      content: string
+    }[]
+    expect(msgs[msgs.length - 2].content).toContain('comprobante de pago')
+    expect(msgs[msgs.length - 1].content).toContain('MODO HUMANO')
+  })
+
+  it('no corre para cuentas sin agente clínico', async () => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: false }))
+    await dispatchAiResume(ARGS)
+    expect(h.runClinicalAgent).not.toHaveBeenCalled()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('no corre si la conversación sigue en modo humano o tiene agente asignado', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: true,
+      ai_reply_count: 0,
+    }
+    await dispatchAiResume(ARGS)
+    expect(h.runClinicalAgent).not.toHaveBeenCalled()
+
+    h.state.conv = {
+      assigned_agent_id: 'agent-9',
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+    }
+    await dispatchAiResume(ARGS)
+    expect(h.runClinicalAgent).not.toHaveBeenCalled()
+  })
+
+  it('no corre si el hilo no tiene mensajes del paciente', async () => {
+    h.buildConversationContext.mockResolvedValue([
+      { role: 'assistant', content: 'Buen día! Te escribe Sofía.' },
+    ])
+    await dispatchAiResume(ARGS)
+    expect(h.runClinicalAgent).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('descarta la respuesta si el modo cambió mientras el modelo generaba', async () => {
+    h.runClinicalAgent.mockImplementation(async () => {
+      h.state.conv = {
+        assigned_agent_id: null,
+        ai_autoreply_disabled: true,
+        ai_reply_count: 0,
+      }
+      return { text: 'Hola!', handoff: false, escalated: false }
+    })
+    await dispatchAiResume(ARGS)
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.rpcCalls).toHaveLength(0)
+  })
+
+  it('si el envío falla, avisa al equipo (nunca silencio)', async () => {
+    h.engineSendText.mockRejectedValue(new Error('Zernio API error: 401'))
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchAiResume(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.state.notifications).toHaveLength(1)
+    expect(h.state.notifications[0].title).toBe(
+      'No se pudo enviar la respuesta del agente',
+    )
   })
 })

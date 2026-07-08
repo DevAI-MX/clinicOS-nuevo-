@@ -645,8 +645,19 @@ export function MessageThread({
     toast.success(
       next
         ? "Modo humano: tú tienes el control de esta conversación."
-        : "Modo IA: el asistente vuelve a responder automáticamente.",
+        : "Modo IA: el asistente revisará si quedó algo pendiente y volverá a responder automáticamente.",
     );
+
+    // Retome de contexto: al reactivar la IA, el agente relee el hilo
+    // (server-side, best-effort) y decide si quedó un pendiente que
+    // retomar con el paciente — p. ej. un mensaje que el equipo dejó
+    // sin responder antes de soltar el control.
+    if (!next) {
+      void fetch(
+        `/api/inbox/conversations/${conversation.id}/ai-resume`,
+        { method: "POST" },
+      ).catch(() => {});
+    }
   }, [conversation, aiDisabled, onAiModeChange]);
 
   // --- Descargar conversación en JSON ----------------------------------
