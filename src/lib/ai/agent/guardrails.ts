@@ -241,8 +241,17 @@ export function validateClinicalReply(
 
 const FALLBACK_PAGO =
   'Gracias, recibí tu mensaje. Lo revisa el equipo y te confirmamos por aquí en cuanto quede validado.'
+// Honesto a propósito: si llegamos aquí es porque el agendado NO
+// aterrizó (ni siquiera tras el reintento de corrección). El texto
+// viejo ("voy a revisar la agenda") se contradecía cuando el propio
+// agente acababa de ofrecer la agenda — caso Acerotech: el paciente
+// contestó "qué tienes que revisar si me acabas de ofrecer el horario?"
+// y recibió el mismo texto en bucle. Este no promete revisar nada:
+// dice qué pasó y qué sigue (el equipo, que YA recibió el aviso).
 const FALLBACK_AGENDA =
-  'Gracias, voy a revisar la agenda con el equipo para confirmarte bien por aquí.'
+  'Se me complicó apartar ese horario en el sistema ahora mismo. Ya le avisé al equipo para que lo aparte y te confirme por aquí — no necesitas hacer nada más.'
+const FALLBACK_CITA =
+  'La confirmación final de tu cita te la da el equipo por aquí en cuanto la revise — ya les avisé para que no se les pase.'
 const FALLBACK_PRECIO =
   'Gracias por escribirme. Déjame revisarlo con el equipo para darte la información correcta por aquí.'
 const FALLBACK_GENERICO =
@@ -251,12 +260,60 @@ const FALLBACK_GENERICO =
 /**
  * Respuesta neutra que reemplaza a una bloqueada por el guardrail.
  * Prioridad: pago (lo más delicado — el paciente suele estar esperando
- * la validación de su comprobante) → agenda/cita → precio → genérico.
+ * la validación de su comprobante) → horario (el paciente estaba
+ * aceptando una cita que no se apartó) → cita dada por confirmada →
+ * precio → genérico.
  */
 export function buildClinicalFallbackReply(verdict: GuardrailVerdict): string {
   const cats = new Set(verdict.categories ?? [])
   if (cats.has('pago_confirmado')) return FALLBACK_PAGO
-  if (cats.has('cita_confirmada') || cats.has('horario')) return FALLBACK_AGENDA
+  if (cats.has('horario')) return FALLBACK_AGENDA
+  if (cats.has('cita_confirmada')) return FALLBACK_CITA
   if (cats.has('precio')) return FALLBACK_PRECIO
   return FALLBACK_GENERICO
+}
+
+// ------------------------------------------------------------
+// Nota de auto-corrección (una sola ronda de reparación).
+//
+// Antes de rendirse al fallback, auto-reply.ts re-corre el agente UNA
+// vez con esta nota al final del hilo: le dice qué borrador se bloqueó,
+// por qué, y qué herramienta debe llamar para respaldarlo. El caso que
+// la motivó (Acerotech, 2026-07-08): el paciente ACEPTÓ un horario, el
+// modelo "narró" el cierre sin llamar agendar_cita, el guardrail lo
+// bloqueó (correctamente) y la conversación murió en un bucle de
+// contención. La nota convierte ese bloqueo en la señal que al modelo
+// le faltaba para actuar. La respuesta reparada pasa por el MISMO
+// guardrail — esto no debilita ningún candado.
+// ------------------------------------------------------------
+
+const REPAIR_INSTRUCTION: Record<GuardrailBlockCategory, string> = {
+  precio:
+    'Mencionaste un precio o monto que ninguna herramienta te devolvió: llama consultar_catalogo (o la herramienta del anticipo si se trata del anticipo) y usa SOLO las cifras que te devuelva; si no obtienes la cifra, no menciones cifras.',
+  horario:
+    'Mencionaste un horario que tus herramientas no respaldan EN ESTE turno. Si el paciente ya aceptó o propuso un horario en la conversación (aunque fuera con condiciones como "si hay antes, mejor"), llama agendar_cita AHORA MISMO con esa fecha y hora exactas — la herramienta valida el hueco sola y, si está ocupado, te devuelve alternativas reales para ofrecerle. Si todavía no hay horario acordado, llama consultar_disponibilidad y ofrece únicamente los huecos que devuelva. No prometas "revisar la agenda": la agenda la consultas tú con tus herramientas en este mismo turno.',
+  pago_confirmado:
+    'Afirmaste que un pago quedó confirmado o registrado, y eso solo lo confirma el equipo en el panel: di que quedó EN REVISIÓN y que le confirmas por aquí en cuanto el equipo lo valide.',
+  cita_confirmada:
+    'Diste una cita por confirmada: una cita solo queda APARTADA cuando agendar_cita corre con éxito en este turno, y CONFIRMADA únicamente cuando el equipo valida el anticipo en el panel. Ajusta lo que dices a lo que tus herramientas de verdad hicieron.',
+}
+
+const REPAIR_GENERIC =
+  'Tu respuesta afirmaba algo que tus herramientas no respaldan: reescríbela usando únicamente lo que tus herramientas devuelvan en este turno.'
+
+/**
+ * Nota de sistema (rol user, como las notas de imagen/retome) que se
+ * anexa al hilo para la ronda de reparación. Incluye el borrador
+ * bloqueado — el modelo necesita ver QUÉ intentaba decir para
+ * respaldarlo con la tool correcta — y la instrucción por categoría.
+ * Solo la ve el modelo; jamás viaja al paciente ni a los avisos.
+ */
+export function buildGuardrailRepairNote(
+  verdict: GuardrailVerdict,
+  blockedText: string,
+): string {
+  const cats = [...new Set(verdict.categories ?? [])]
+  const instructions =
+    cats.length > 0 ? cats.map((c) => REPAIR_INSTRUCTION[c]) : [REPAIR_GENERIC]
+  return `[Nota automática del sistema — el paciente NO escribió esto y NO ha recibido nada: tu respuesta anterior fue BLOQUEADA por las verificaciones de seguridad y NO se envió. Motivos: ${verdict.reasons.join('; ')}. Tu borrador bloqueado fue: «${blockedText}». Corrígelo así: ${instructions.join(' ')} Vuelve a responder al último mensaje del paciente en un solo mensaje, llamando AHORA las herramientas necesarias para respaldar cada dato que menciones. No menciones esta nota ni que hubo un error.]`
 }

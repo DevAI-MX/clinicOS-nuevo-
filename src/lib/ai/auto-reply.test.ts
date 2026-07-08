@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   buildRecentImageNotes: vi.fn(),
   validateClinicalReply: vi.fn(),
   buildClinicalFallbackReply: vi.fn(),
+  buildGuardrailRepairNote: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -54,6 +55,7 @@ vi.mock('./agent', () => ({
   buildRecentImageNotes: h.buildRecentImageNotes,
   validateClinicalReply: h.validateClinicalReply,
   buildClinicalFallbackReply: h.buildClinicalFallbackReply,
+  buildGuardrailRepairNote: h.buildGuardrailRepairNote,
   clinicTimezone: () => 'America/Mexico_City',
 }))
 vi.mock('./admin-client', () => ({
@@ -267,6 +269,7 @@ beforeEach(() => {
   h.buildClinicalFallbackReply.mockReturnValue(
     'Gracias por escribirme. Lo reviso con el equipo para darte una respuesta correcta por aquí.',
   )
+  h.buildGuardrailRepairNote.mockReturnValue('[nota de corrección]')
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -674,6 +677,168 @@ describe('dispatchInboundToAiReply — guardrail de respuesta insegura', () => {
       'El agente generó una respuesta insegura',
     )
     expect(String(h.state.notifications[0].body)).toContain('retómalo tú')
+  })
+})
+
+// Ronda de auto-reparación (caso Acerotech): antes de rendirse al
+// fallback, el agente se re-corre UNA vez con la nota de qué se bloqueó
+// y por qué — típicamente el modelo narró un agendado sin llamar
+// agendar_cita y la segunda pasada sí lo ejecuta. La salida reparada
+// pasa por el MISMO guardrail.
+describe('dispatchInboundToAiReply — ronda de corrección tras el bloqueo', () => {
+  beforeEach(() => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ clinicalAgentEnabled: true }))
+  })
+
+  it('si la segunda pasada pasa el guardrail, sale ESA respuesta — sin fallback ni aviso', async () => {
+    h.runClinicalAgent
+      .mockResolvedValueOnce({
+        text: 'Listo, te agendo a las 4 pm',
+        handoff: false,
+        escalated: false,
+        traces: [],
+      })
+      .mockResolvedValueOnce({
+        text: 'Listo, te aparté el jueves a las 4:00 p.m. Para asegurar tu lugar va un anticipo.',
+        handoff: false,
+        escalated: false,
+        traces: [
+          { name: 'agendar_cita', input: {}, content: '{"ok":true}', isError: false },
+        ],
+      })
+    h.validateClinicalReply
+      .mockReturnValueOnce({
+        ok: false,
+        reasons: ['ofrece horarios concretos sin respaldo'],
+        categories: ['horario'],
+      })
+      .mockReturnValueOnce({ ok: true, reasons: [] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    // La respuesta reparada sale como una respuesta normal (con claim).
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('te aparté el jueves') }),
+    )
+    expect(h.buildClinicalFallbackReply).not.toHaveBeenCalled()
+    expect(h.state.notifications).toHaveLength(0)
+    // La segunda corrida lleva la nota de corrección al final del hilo,
+    // construida con el veredicto y el borrador bloqueado.
+    expect(h.runClinicalAgent).toHaveBeenCalledTimes(2)
+    const secondMsgs = h.runClinicalAgent.mock.calls[1][0].messages as {
+      role: string
+      content: string
+    }[]
+    expect(secondMsgs[secondMsgs.length - 1]).toEqual({
+      role: 'user',
+      content: '[nota de corrección]',
+    })
+    expect(h.buildGuardrailRepairNote).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: false }),
+      'Listo, te agendo a las 4 pm',
+    )
+  })
+
+  it('la respuesta reparada se valida con las trazas de AMBAS pasadas como evidencia', async () => {
+    const t1 = { name: 'consultar_disponibilidad', input: {}, content: 'huecos', isError: false }
+    const t2 = { name: 'agendar_cita', input: {}, content: 'apartada', isError: false }
+    h.runClinicalAgent
+      .mockResolvedValueOnce({ text: 'inseguro', handoff: false, escalated: false, traces: [t1] })
+      .mockResolvedValueOnce({ text: 'reparado', handoff: false, escalated: false, traces: [t2] })
+    h.validateClinicalReply
+      .mockReturnValueOnce({ ok: false, reasons: ['motivo x'] })
+      .mockReturnValueOnce({ ok: true, reasons: [] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.validateClinicalReply).toHaveBeenNthCalledWith(2, {
+      text: 'reparado',
+      traces: [t1, t2],
+      stateLines: [],
+    })
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'reparado' }),
+    )
+  })
+
+  it('si el reintento tampoco pasa, cae al fallback y el aviso lo cuenta con la acción sugerida', async () => {
+    h.validateClinicalReply.mockReturnValue({
+      ok: false,
+      reasons: ['ofrece horarios concretos que no aparecen en la disponibilidad'],
+      categories: ['horario'],
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.runClinicalAgent).toHaveBeenCalledTimes(2)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1) // el fallback
+    expect(h.state.notifications).toHaveLength(1)
+    const body = String(h.state.notifications[0].body)
+    expect(body).toContain('reintento automático de corrección')
+    expect(body).toContain('apártale tú la cita desde la agenda del panel')
+  })
+
+  it('si el reintento LANZA (proveedor caído), cae al fallback con el veredicto original', async () => {
+    h.runClinicalAgent
+      .mockResolvedValueOnce({ text: 'inseguro', handoff: false, escalated: false, traces: [] })
+      .mockRejectedValueOnce(new Error('provider down'))
+    h.validateClinicalReply.mockReturnValue({ ok: false, reasons: ['motivo original'] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).toHaveBeenCalledTimes(1) // el fallback sale igual
+    expect(h.state.notifications).toHaveLength(1)
+    expect(String(h.state.notifications[0].body)).toContain('motivo original')
+  })
+
+  it('si el reintento devuelve handoff o texto vacío, cae al fallback sin validarlo', async () => {
+    h.runClinicalAgent
+      .mockResolvedValueOnce({ text: 'inseguro', handoff: false, escalated: false, traces: [] })
+      .mockResolvedValueOnce({ text: '', handoff: true, escalated: false, traces: [] })
+    h.validateClinicalReply.mockReturnValueOnce({ ok: false, reasons: ['motivo y'] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchInboundToAiReply(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.validateClinicalReply).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1) // el fallback
+    expect(h.state.notifications).toHaveLength(1)
+  })
+
+  it('resume: la ronda de corrección también aplica — si pasa, el retome sale sin aviso', async () => {
+    h.runClinicalAgent
+      .mockResolvedValueOnce({ text: 'retome inseguro', handoff: false, escalated: false, traces: [] })
+      .mockResolvedValueOnce({ text: 'retome corregido', handoff: false, escalated: false, traces: [] })
+    h.validateClinicalReply
+      .mockReturnValueOnce({ ok: false, reasons: ['motivo z'] })
+      .mockReturnValueOnce({ ok: true, reasons: [] })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await dispatchAiResume(ARGS)
+    } finally {
+      errSpy.mockRestore()
+    }
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'retome corregido' }),
+    )
+    expect(h.state.notifications).toHaveLength(0)
+    expect(h.buildClinicalFallbackReply).not.toHaveBeenCalled()
   })
 })
 

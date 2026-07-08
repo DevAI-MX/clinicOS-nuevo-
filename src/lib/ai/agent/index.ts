@@ -10,7 +10,11 @@ export type {
 export { buildClinicalSystemPrompt } from './prompt'
 export type { ClinicalPromptArgs } from './prompt'
 export { buildPatientStateLines, buildReceptionFlowLines } from './state'
-export { validateClinicalReply, buildClinicalFallbackReply } from './guardrails'
+export {
+  validateClinicalReply,
+  buildClinicalFallbackReply,
+  buildGuardrailRepairNote,
+} from './guardrails'
 export type {
   GuardrailVerdict,
   GuardrailBlockCategory,

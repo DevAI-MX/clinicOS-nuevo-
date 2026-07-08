@@ -20,8 +20,13 @@ import {
   clinicTimezone,
   validateClinicalReply,
   buildClinicalFallbackReply,
+  buildGuardrailRepairNote,
 } from './agent'
-import type { ToolTrace } from './agent'
+import type {
+  GuardrailVerdict,
+  RunClinicalAgentResult,
+  ToolTrace,
+} from './agent'
 import { engineSendText } from '@/lib/flows/meta-send'
 import { zernioSendToConversation } from '@/lib/zernio/client'
 import { isUniqueViolation } from '@/lib/contacts/dedupe'
@@ -163,6 +168,11 @@ export async function dispatchInboundToAiReply(
     // Contexto para el guardrail determinista (solo rama clínica): las
     // tools que corrieron + el snapshot de BD que respalda la respuesta.
     let guardContext: { traces: ToolTrace[]; stateLines: string[] } | null = null
+    // Re-corre el agente con una nota de corrección al final del hilo
+    // (misma config y mismo contexto) — lo usa la ronda de reparación
+    // cuando el guardrail bloquea. Solo la rama clínica lo define.
+    let rerunWithNote: ((note: string) => Promise<RunClinicalAgentResult>) | null =
+      null
 
     if (config.clinicalAgentEnabled) {
       // clinicOS: agente de Atención con herramientas clínicas (catálogo,
@@ -222,12 +232,11 @@ export async function dispatchInboundToAiReply(
         flowLines,
       })
 
-      const result = await runClinicalAgent({
+      const agentArgs = {
         provider: config.provider,
         apiKey: config.apiKey,
         model: config.model,
         systemPrompt,
-        messages: agentMessages,
         ctx: {
           db,
           accountId,
@@ -239,13 +248,19 @@ export async function dispatchInboundToAiReply(
           now,
           embeddingsApiKey: config.embeddingsApiKey,
         },
-      })
+      }
+      const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
       text = result.text
       handoff = result.handoff
       guardContext = {
         traces: result.traces ?? [],
         stateLines: [...stateLines, ...flowLines],
       }
+      rerunWithNote = (note) =>
+        runClinicalAgent({
+          ...agentArgs,
+          messages: [...agentMessages, { role: 'user' as const, content: note }],
+        })
     } else {
       // Ground the reply in the account's knowledge base (best-effort).
       const knowledge = await retrieveKnowledge(
@@ -285,24 +300,47 @@ export async function dispatchInboundToAiReply(
 
     // Guardrail determinista (rama clínica): la respuesta debe estar
     // respaldada por las tools del turno o por el snapshot de BD. Si no
-    // pasa, el texto inseguro NO se envía — pero el paciente tampoco se
-    // queda en visto: en su lugar sale un fallback neutro de contención
-    // (sin precios, sin horarios, sin confirmar nada) que respeta el
-    // mismo gate humano y el mismo claim de slot que cualquier envío.
-    // El equipo recibe el aviso con el motivo y con qué pasó con el
-    // fallback; el modo IA queda intacto (el siguiente inbound se
-    // reintenta normal). El texto inseguro no viaja en el aviso (puede
-    // traer datos del paciente) — solo los motivos, que no llevan PII.
+    // pasa, el texto inseguro NO se envía. Antes de rendirse, UNA ronda
+    // de auto-reparación: se re-corre el agente con la nota de qué se
+    // bloqueó y por qué — el caso típico (Acerotech) es que el modelo
+    // "narró" un agendado sin llamar agendar_cita, y con la nota la
+    // segunda pasada sí lo ejecuta (lo que además desbloquea el mensaje
+    // del anticipo, que viene en el resultado de esa tool). La salida
+    // reparada pasa por el MISMO guardrail; ningún candado se debilita.
+    // Si tampoco pasa, el paciente no se queda en visto: sale el
+    // fallback neutro de contención (sin precios, sin horarios, sin
+    // confirmar nada) que respeta el mismo gate humano y el mismo claim
+    // de slot que cualquier envío. El equipo recibe el aviso con el
+    // motivo y con qué pasó con el fallback; el modo IA queda intacto
+    // (el siguiente inbound se reintenta normal). El texto inseguro no
+    // viaja en el aviso (puede traer datos del paciente) — solo los
+    // motivos, que no llevan PII.
     if (guardContext) {
-      const verdict = validateClinicalReply({
+      let verdict = validateClinicalReply({
         text,
         traces: guardContext.traces,
         stateLines: guardContext.stateLines,
       })
-      if (!verdict.ok) {
+      if (!verdict.ok && rerunWithNote) {
         console.error(
-          `[ai auto-reply] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')}`,
+          `[ai auto-reply] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')} — reintentando con nota de corrección`,
         )
+        const repair = await attemptGuardrailRepair({
+          rerun: rerunWithNote,
+          blockedText: text,
+          verdict,
+          priorTraces: guardContext.traces,
+          stateLines: guardContext.stateLines,
+          logTag: 'ai auto-reply',
+        })
+        if (repair.ok) {
+          text = repair.text
+          verdict = { ok: true, reasons: [] }
+        } else {
+          verdict = repair.verdict
+        }
+      }
+      if (!verdict.ok) {
         const fallbackOutcome = await sendSafeFallback(db, {
           accountId,
           conversationId,
@@ -318,7 +356,7 @@ export async function dispatchInboundToAiReply(
           contactId,
           configOwnerUserId,
           title: 'El agente generó una respuesta insegura',
-          body: `escribió y el agente generó una respuesta que no pasó las validaciones (${verdict.reasons.join('; ')}). ${FALLBACK_NOTICE[fallbackOutcome]}`,
+          body: `escribió y el agente generó una respuesta que no pasó las validaciones (${verdict.reasons.join('; ')}), ni siquiera tras el reintento automático de corrección. ${FALLBACK_NOTICE[fallbackOutcome]}${agendaActionHint(verdict)}`,
         })
         return
       }
@@ -576,6 +614,75 @@ async function sendSafeFallback(
   }
 }
 
+interface GuardrailRepairArgs {
+  /** Re-corre el agente con la nota de corrección anexada al hilo. */
+  rerun: (note: string) => Promise<RunClinicalAgentResult>
+  /** El texto que el guardrail bloqueó (va en la nota, solo al modelo). */
+  blockedText: string
+  /** Veredicto del bloqueo original — motivos y categorías para la nota. */
+  verdict: GuardrailVerdict
+  /** Tools que SÍ corrieron en la primera pasada: siguen siendo
+   *  evidencia legítima del turno para validar la respuesta reparada. */
+  priorTraces: ToolTrace[]
+  stateLines: string[]
+  logTag: string
+}
+
+type GuardrailRepairResult =
+  | { ok: true; text: string }
+  | { ok: false; verdict: GuardrailVerdict }
+
+/**
+ * UNA ronda de auto-reparación tras un bloqueo del guardrail: re-corre
+ * el agente con la nota de qué se bloqueó y por qué (la señal que le
+ * faltaba para llamar la tool que no llamó — p. ej. agendar_cita cuando
+ * el paciente ya aceptó un horario) y valida la nueva salida con el
+ * MISMO guardrail, sumando las trazas de ambas pasadas como evidencia
+ * del turno. Acotada a un intento: los bloqueos son raros y una segunda
+ * corrida ya duplica costo/latencia. Nunca lanza — si la reparación
+ * falla (verdict nuevo, texto vacío, handoff o error de proveedor), el
+ * caller sigue con el veredicto más fresco que tengamos.
+ */
+async function attemptGuardrailRepair(
+  args: GuardrailRepairArgs,
+): Promise<GuardrailRepairResult> {
+  try {
+    const second = await args.rerun(
+      buildGuardrailRepairNote(args.verdict, args.blockedText),
+    )
+    if (second.handoff || !second.text) return { ok: false, verdict: args.verdict }
+    const verdict = validateClinicalReply({
+      text: second.text,
+      traces: [...args.priorTraces, ...(second.traces ?? [])],
+      stateLines: args.stateLines,
+    })
+    if (verdict.ok) {
+      console.log(`[${args.logTag}] la ronda de corrección pasó el guardrail`)
+      return { ok: true, text: second.text }
+    }
+    console.error(
+      `[${args.logTag}] el reintento de corrección tampoco pasó: ${verdict.reasons.join('; ')}`,
+    )
+    return { ok: false, verdict }
+  } catch (err) {
+    console.error(`[${args.logTag}] el reintento de corrección falló:`, err)
+    return { ok: false, verdict: args.verdict }
+  }
+}
+
+/**
+ * Cierre accionable del aviso cuando el bloqueo fue de agenda: en el
+ * caso típico el paciente estaba ACEPTANDO un horario que el agente no
+ * logró apartar — el equipo debe apartarlo él, no solo "dar
+ * seguimiento".
+ */
+function agendaActionHint(verdict: GuardrailVerdict): string {
+  const cats = verdict.categories ?? []
+  return cats.includes('horario') || cats.includes('cita_confirmada')
+    ? ' Si el paciente estaba aceptando un horario, apártale tú la cita desde la agenda del panel.'
+    : ''
+}
+
 export interface ResumeDispatchArgs {
   accountId: string
   conversationId: string
@@ -685,12 +792,11 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
       flowLines,
     })
 
-    const result = await runClinicalAgent({
+    const agentArgs = {
       provider: config.provider,
       apiKey: config.apiKey,
       model: config.model,
       systemPrompt,
-      messages: agentMessages,
       ctx: {
         db,
         accountId,
@@ -702,14 +808,16 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
         now,
         embeddingsApiKey: config.embeddingsApiKey,
       },
-    })
+    }
+    const result = await runClinicalAgent({ ...agentArgs, messages: agentMessages })
 
     // Handoff aquí significa "nada que retomar": descarte silencioso.
     if (result.handoff || !result.text) return
 
-    // Mismo guardrail que el inbound: un retome sin respaldo tampoco
-    // sale — y aquí sí se avisa (a diferencia del handoff silencioso,
-    // esto es una respuesta insegura, no una salida feliz).
+    // Mismo guardrail que el inbound, con la misma ronda de reparación:
+    // un retome sin respaldo tampoco sale — y si tampoco la segunda
+    // pasada lo respalda, aquí sí se avisa (a diferencia del handoff
+    // silencioso, esto es una respuesta insegura, no una salida feliz).
     //
     // Decisión deliberada: en el retome NO se manda el fallback de
     // contención. Quien reactivó la IA acaba de estar en el hilo desde
@@ -717,22 +825,43 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
     // respuesta inmediata; un "lo reviso con el equipo" automático
     // justo después de que el equipo atendió confunde más de lo que
     // contiene. Basta el aviso para que lo retome una persona.
-    const verdict = validateClinicalReply({
-      text: result.text,
+    let replyText = result.text
+    let verdict = validateClinicalReply({
+      text: replyText,
       traces: result.traces ?? [],
       stateLines: [...stateLines, ...flowLines],
     })
     if (!verdict.ok) {
       console.error(
-        `[ai resume] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')}`,
+        `[ai resume] guardrail bloqueó la respuesta: ${verdict.reasons.join('; ')} — reintentando con nota de corrección`,
       )
+      const repair = await attemptGuardrailRepair({
+        rerun: (note) =>
+          runClinicalAgent({
+            ...agentArgs,
+            messages: [...agentMessages, { role: 'user' as const, content: note }],
+          }),
+        blockedText: replyText,
+        verdict,
+        priorTraces: result.traces ?? [],
+        stateLines: [...stateLines, ...flowLines],
+        logTag: 'ai resume',
+      })
+      if (repair.ok) {
+        replyText = repair.text
+        verdict = { ok: true, reasons: [] }
+      } else {
+        verdict = repair.verdict
+      }
+    }
+    if (!verdict.ok) {
       await notifyTeamOnce(db, {
         accountId,
         conversationId,
         contactId,
         configOwnerUserId,
         title: 'El agente generó una respuesta insegura',
-        body: `tenía un pendiente al reactivar el modo IA, pero la respuesta del agente no pasó las validaciones (${verdict.reasons.join('; ')}). No se le envió nada — acabas de tener el hilo en el panel; retómalo tú directamente.`,
+        body: `tenía un pendiente al reactivar el modo IA, pero la respuesta del agente no pasó las validaciones (${verdict.reasons.join('; ')}), ni siquiera tras el reintento automático de corrección. No se le envió nada — acabas de tener el hilo en el panel; retómalo tú directamente.`,
       })
       return
     }
@@ -761,7 +890,7 @@ export async function dispatchAiResume(args: ResumeDispatchArgs): Promise<void> 
         contactId,
         configOwnerUserId,
         zernioConversationId,
-        text: result.text,
+        text: replyText,
       })
     } catch (sendErr) {
       console.error('[ai resume] outbound send failed:', sendErr)
