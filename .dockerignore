@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.github
+docs
+ventas
+informacion conversaciones json
+*.md
+!README.md
+.env*
+!.env.local.example
+scripts/*.local.*
+coverage
+.DS_Store

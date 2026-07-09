@@ -62,6 +62,15 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   /**
+   * Standalone output for Docker deploys (VPS vía Dokploy). `next build`
+   * emite `.next/standalone` con un `server.js` mínimo y solo los
+   * node_modules trazados — la imagen final no necesita `npm install`.
+   * Railway/Hostinger Node gestionado ignoran esto (siguen usando
+   * `next start`), así que es inocuo mientras convivan ambos deploys.
+   */
+  output: "standalone",
+
+  /**
    * Cache-Control policy.
    *
    * Why this exists:
