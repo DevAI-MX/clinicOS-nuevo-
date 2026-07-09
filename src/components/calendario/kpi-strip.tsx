@@ -6,7 +6,7 @@
  * semana en curso.
  */
 
-import { CalendarCheck, CalendarDays, HandCoins } from "lucide-react";
+import { CalendarCheck, CalendarDays, HandCoins, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/currency";
 import { CLINIC_CURRENCY } from "@/lib/clinic/types";
@@ -19,7 +19,7 @@ interface KpiStripProps {
 
 export function KpiStrip({ kpis, loading = false }: KpiStripProps) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <KpiCard
         icon={<CalendarCheck className="size-4" />}
         label="Citas de hoy"
@@ -35,6 +35,17 @@ export function KpiStrip({ kpis, loading = false }: KpiStripProps) {
             : undefined
         }
         detailClassName="text-warning"
+      />
+      <KpiCard
+        icon={<CheckCircle2 className="size-4 text-success" />}
+        label="Anticipos pagados"
+        value={loading ? "—" : String(kpis.depositPaidCount)}
+        detail={
+          !loading && kpis.depositPaidTotal > 0
+            ? `${formatCurrency(kpis.depositPaidTotal, CLINIC_CURRENCY)} confirmados`
+            : undefined
+        }
+        detailClassName="text-success"
       />
       <KpiCard
         icon={<CalendarDays className="size-4" />}

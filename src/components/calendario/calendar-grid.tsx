@@ -287,7 +287,7 @@ function DayColumn({
             type="button"
             onClick={() => onSelectAppointment(appointment.id)}
             className={cn(
-              "absolute z-10 flex items-stretch gap-1 overflow-hidden rounded-md border text-left shadow-soft transition-colors",
+              "absolute z-10 flex items-stretch overflow-hidden rounded-xl border text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md",
               style.container,
             )}
             style={{
@@ -300,7 +300,7 @@ function DayColumn({
             <span
               aria-hidden
               className={cn(
-                "w-1 shrink-0 rounded-full",
+                "w-1.5 shrink-0",
                 !useDoctorColor && style.bar,
               )}
               style={
@@ -309,10 +309,10 @@ function DayColumn({
                   : undefined
               }
             />
-            <span className="min-w-0 flex-1 py-0.5 pr-1">
+            <span className="min-w-0 flex-1 flex flex-col py-1.5 px-2">
               <span
                 className={cn(
-                  "block truncate text-[11px] font-medium leading-tight",
+                  "block truncate text-xs font-bold leading-tight",
                   style.struck && "line-through",
                 )}
               >
@@ -322,7 +322,7 @@ function DayColumn({
               </span>
               <span
                 className={cn(
-                  "nums block truncate text-[10px] leading-tight text-muted-foreground",
+                  "nums mt-0.5 block truncate text-[10px] leading-tight text-foreground/75",
                   style.struck && "line-through",
                 )}
               >
@@ -330,6 +330,17 @@ function DayColumn({
                 {appointment.procedure ? ` · ${appointment.procedure.name}` : ""}
                 {doctorFirstName ? ` · ${doctorFirstName}` : ""}
               </span>
+              <div className="mt-auto flex items-center justify-end pt-1 gap-1">
+                {appointment.status === "completada" ? (
+                  <span className="inline-flex items-center rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[9px] font-bold text-success">
+                    Completada
+                  </span>
+                ) : appointment.deposit_status === "pagado" ? (
+                  <span className="inline-flex items-center rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-[9px] font-bold text-success">
+                    Pagado
+                  </span>
+                ) : null}
+              </div>
             </span>
           </button>
         );

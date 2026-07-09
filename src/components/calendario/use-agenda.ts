@@ -37,6 +37,10 @@ export interface AgendaKpis {
   depositPendingCount: number;
   /** Suma de sus anticipos (snapshot deposit_amount). */
   depositPendingTotal: number;
+  /** Citas con anticipo pagado esta semana. */
+  depositPaidCount: number;
+  /** Suma de anticipos pagados esta semana. */
+  depositPaidTotal: number;
 }
 
 const EMPTY_KPIS: AgendaKpis = {
@@ -44,6 +48,8 @@ const EMPTY_KPIS: AgendaKpis = {
   weekCount: 0,
   depositPendingCount: 0,
   depositPendingTotal: 0,
+  depositPaidCount: 0,
+  depositPaidTotal: 0,
 };
 
 export function useAgenda(rangeStart: Date, rangeEnd: Date) {
@@ -80,7 +86,7 @@ export function useAgenda(rangeStart: Date, rangeEnd: Date) {
     const weekStart = mondayOf(now);
     const weekEnd = addDays(weekStart, 7);
 
-    const [agendaRes, blocksRes, todayRes, weekRes, depositRes] =
+    const [agendaRes, blocksRes, todayRes, weekRes, depositRes, depositPaidRes] =
       await Promise.all([
         // Todo lo que TOQUE el rango (starts_at < fin Y ends_at > inicio),
         // no solo lo que empiece dentro — una cita que cruza medianoche
@@ -119,6 +125,13 @@ export function useAgenda(rangeStart: Date, rangeEnd: Date) {
           .gte("starts_at", todayStart.toISOString())
           .neq("status", "cancelada")
           .neq("status", "no_asistio"),
+        supabase
+          .from("appointments")
+          .select("deposit_amount")
+          .eq("deposit_status", "pagado")
+          .gte("starts_at", weekStart.toISOString())
+          .lt("starts_at", weekEnd.toISOString())
+          .neq("status", "cancelada"),
       ]);
 
     if (seq !== fetchSeq.current) return; // superado por un fetch más nuevo
@@ -137,6 +150,10 @@ export function useAgenda(rangeStart: Date, rangeEnd: Date) {
     const depositRows = (depositRes.data ?? []) as {
       deposit_amount: number | null;
     }[];
+    const paidRows = (depositPaidRes.data ?? []) as {
+      deposit_amount: number | null;
+    }[];
+    
     setKpis({
       todayCount: todayRes.count ?? 0,
       weekCount: weekRes.count ?? 0,
@@ -145,8 +162,14 @@ export function useAgenda(rangeStart: Date, rangeEnd: Date) {
         (sum, r) => sum + (Number(r.deposit_amount) || 0),
         0,
       ),
+      depositPaidCount: paidRows.length,
+      depositPaidTotal: paidRows.reduce(
+        (sum, r) => sum + (Number(r.deposit_amount) || 0),
+        0,
+      ),
     });
     setLoading(false);
+
   }, [supabase, rangeStartMs, rangeEndMs]);
 
   // Catálogo activo — una vez al montar; cambia poco y solo lo usa el

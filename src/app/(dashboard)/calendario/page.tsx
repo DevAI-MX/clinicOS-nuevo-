@@ -17,8 +17,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Lock,
+  Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -43,6 +45,7 @@ import {
 } from "@/lib/clinic/calendar";
 
 type ViewMode = "semana" | "dia";
+type StatusFilter = "all" | "confirmada" | "deposit_pending" | "completada";
 
 export default function CalendarioPage() {
   const [view, setView] = useState<ViewMode>("semana");
@@ -54,6 +57,8 @@ export default function CalendarioPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Filtro por doctor: "all" = todos, "unassigned" = sin doctor, o un user_id.
   const [doctorFilter, setDoctorFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   // Días visibles + rango [inicio, fin) que pide el hook.
   const { days, rangeStart, rangeEnd } = useMemo(() => {
@@ -78,14 +83,36 @@ export default function CalendarioPage() {
     [doctors],
   );
 
-  // Citas visibles según el filtro de doctor. La ficha lateral se busca
-  // sobre la lista completa para que no desaparezca al filtrar.
+  // Citas visibles según el filtro de doctor, estado y búsqueda.
   const visibleAppointments = useMemo(() => {
-    if (doctorFilter === "all") return appointments;
-    if (doctorFilter === "unassigned")
-      return appointments.filter((a) => !a.doctor_id);
-    return appointments.filter((a) => a.doctor_id === doctorFilter);
-  }, [appointments, doctorFilter]);
+    let list = appointments;
+
+    if (doctorFilter !== "all") {
+      list = list.filter((a) =>
+        doctorFilter === "unassigned" ? !a.doctor_id : a.doctor_id === doctorFilter
+      );
+    }
+
+    if (statusFilter === "confirmada") {
+      list = list.filter((a) => a.status === "confirmada");
+    } else if (statusFilter === "deposit_pending") {
+      list = list.filter((a) => a.deposit_status === "pendiente");
+    } else if (statusFilter === "completada") {
+      list = list.filter((a) => a.status === "completada");
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((a) => {
+        const cName = (a.contact?.name || "").toLowerCase();
+        const cPhone = (a.contact?.phone || "").toLowerCase();
+        const pName = (a.procedure?.name || "").toLowerCase();
+        return cName.includes(q) || cPhone.includes(q) || pName.includes(q);
+      });
+    }
+
+    return list;
+  }, [appointments, doctorFilter, statusFilter, searchQuery]);
 
   const selected =
     appointments.find((a) => a.id === selectedId) ?? null;
@@ -120,6 +147,15 @@ export default function CalendarioPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="relative hidden sm:block">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Buscar cita..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-9 w-64 pl-9 bg-background"
+            />
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -172,6 +208,33 @@ export default function CalendarioPage() {
           >
             <ChevronRight className="h-4 w-4" />
           </Button>
+        </div>
+
+        <div className="flex flex-1 items-center gap-2 overflow-x-auto px-2 scrollbar-none">
+          <div className="flex gap-1.5 rounded-lg border border-border bg-card p-1 shadow-sm">
+            {(
+              [
+                { id: "all", label: "Todos", dot: "bg-primary" },
+                { id: "confirmada", label: "Confirmadas", dot: "bg-success" },
+                { id: "deposit_pending", label: "Anticipo pendiente", dot: "bg-warning" },
+                { id: "completada", label: "Completadas", dot: "bg-muted-foreground" },
+              ] as const
+            ).map((filter) => (
+              <button
+                key={filter.id}
+                onClick={() => setStatusFilter(filter.id as StatusFilter)}
+                className={cn(
+                  "flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                  statusFilter === filter.id
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <span className={cn("size-2 rounded-full", filter.dot)} />
+                {filter.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
