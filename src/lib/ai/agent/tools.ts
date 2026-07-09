@@ -19,9 +19,11 @@ import type { ChatMessage } from '../types'
 export type AgentProvider = 'anthropic' | 'openai'
 
 /** Arnés agéntico que atiende el turno. `native` = los loops de tool-use
- *  in-app (Anthropic/OpenAI, sin cambio). `openclaw`/`hermes` = un gateway
- *  agéntico externo OpenAI-compat que corre SU propio loop de tools. */
-export type AgentBackend = 'native' | 'openclaw' | 'hermes'
+ *  in-app (Anthropic/OpenAI, sin cambio). Cualquier otro = un gateway
+ *  externo OpenAI-compat (mismo tool-loop, `baseUrl`+`authToken` de la
+ *  config): `openclaw`/`hermes` con nombre, o `custom` para uno arbitrario.
+ *  Los tres externos corren el MISMO código; el nombre es solo etiqueta. */
+export type AgentBackend = 'native' | 'openclaw' | 'hermes' | 'custom'
 
 /** Contexto de ejecución compartido por todas las herramientas. */
 export interface AgentToolContext {

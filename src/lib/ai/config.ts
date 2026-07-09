@@ -12,7 +12,7 @@ interface AiConfigRow {
   auto_reply_max_per_conversation: number
   embeddings_api_key: string | null
   clinical_agent_enabled: boolean
-  agent_backend: 'native' | 'openclaw' | 'hermes' | null
+  agent_backend: 'native' | 'openclaw' | 'hermes' | 'custom' | null
   agent_base_url: string | null
   agent_auth_token: string | null
 }

@@ -12,7 +12,7 @@ export type AiProvider = 'openai' | 'anthropic'
  *  'openclaw'/'hermes' = un gateway externo OpenAI-compat. Mismo union que
  *  `AgentBackend` en agent/tools.ts (se mantiene aquí para no acoplar la
  *  superficie de config al módulo del agente). */
-export type AiAgentBackend = 'native' | 'openclaw' | 'hermes'
+export type AiAgentBackend = 'native' | 'openclaw' | 'hermes' | 'custom'
 
 /**
  * Account AI setup, decrypted and ready to use. Produced by

@@ -37,7 +37,7 @@ que el resto:
 
 | Columna | Uso |
 |---|---|
-| `agent_backend` | `native` \| `openclaw` \| `hermes` (default `native`) |
+| `agent_backend` | `native` (default) \| `openclaw` \| `hermes` \| `custom` (gateway arbitrario). Los externos corren el mismo código; el nombre es etiqueta, el `base_url` manda. |
 | `agent_base_url` | Base URL del gateway, **incluye `/v1`** (p. ej. `http://openclaw:18789/v1`) |
 | `agent_auth_token` | Bearer del gateway, **cifrado AES-256-GCM** como `api_key` (NULL si no requiere auth) |
 
