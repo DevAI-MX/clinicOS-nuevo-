@@ -65,6 +65,15 @@ export function NewAppointmentDialog({
     }
   }, [open, defaultDate]);
 
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onOpenChange(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onOpenChange]);
+
   const procedure = procedureId === NO_PROCEDURE ? null : (procedures.find((p) => p.id === procedureId) ?? null);
   const requiresDeposit = !!procedure?.deposit_amount;
 
@@ -137,9 +146,9 @@ export function NewAppointmentDialog({
   if (!open) return null;
 
   return (
-    <div className="calendar-scope">
+    <>
       <div className={cn("drawer-backdrop", open && "open")} onClick={() => onOpenChange(false)}></div>
-      <div className={cn("modal", open && "open")}>
+      <div className={cn("modal", open && "open")} role="dialog" aria-modal="true" aria-label="Nueva cita">
         <div className="modal-header">
           <h3 className="modal-title">Nueva cita</h3>
           <button className="drawer-close" onClick={() => onOpenChange(false)}>×</button>
@@ -261,6 +270,6 @@ export function NewAppointmentDialog({
           </button>
         </div>
       </div>
-    </div>
+    </>
   );
 }

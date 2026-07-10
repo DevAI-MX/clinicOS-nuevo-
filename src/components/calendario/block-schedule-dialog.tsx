@@ -41,6 +41,15 @@ export function BlockScheduleDialog({
     }
   }, [open, defaultDate]);
 
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onOpenChange(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onOpenChange]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
@@ -88,9 +97,9 @@ export function BlockScheduleDialog({
   if (!open) return null;
 
   return (
-    <div className="calendar-scope">
+    <>
       <div className={cn("drawer-backdrop", open && "open")} onClick={() => onOpenChange(false)}></div>
-      <div className={cn("modal", open && "open")}>
+      <div className={cn("modal", open && "open")} role="dialog" aria-modal="true" aria-label="Bloquear horario">
         <div className="modal-header">
           <h3 className="modal-title">Bloquear horario</h3>
           <button className="drawer-close" onClick={() => onOpenChange(false)}>×</button>
@@ -169,6 +178,6 @@ export function BlockScheduleDialog({
           </button>
         </div>
       </div>
-    </div>
+    </>
   );
 }

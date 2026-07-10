@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { nudgeCalendarSync } from "@/lib/integrations/google/nudge-client";
@@ -48,6 +48,15 @@ export function AppointmentSheet({
   const [draftDoctor, setDraftDoctor] = useState<string | null>(null);
   const [draftStatus, setDraftStatus] = useState<AppointmentStatus | null>(null);
   const [draftNotes, setDraftNotes] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onOpenChange(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onOpenChange]);
 
   const currentDoctorId = draftDoctor !== null ? draftDoctor : (appointment?.doctor_id || NO_DOCTOR);
   const currentStatus = draftStatus !== null ? draftStatus : appointment?.status;
@@ -130,9 +139,14 @@ export function AppointmentSheet({
   const isPaid = appointment.deposit_status === "pagado" || appointment.status === "confirmada" || isCompleted;
 
   return (
-    <div className="calendar-scope">
+    <>
       <div className={cn("drawer-backdrop", open && "open")} onClick={() => onOpenChange(false)}></div>
-      <aside className={cn("drawer", open && "open")} aria-label="Detalle de cita">
+      <aside
+        className={cn("drawer", open && "open")}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Detalle de cita"
+      >
         <div className="drawer-header">
           <div>
             <h2 className="drawer-title">{appointment.contact?.name || appointment.contact?.phone || "Cita"}</h2>
@@ -291,7 +305,7 @@ export function AppointmentSheet({
           </div>
         )}
       </aside>
-    </div>
+    </>
   );
 }
 

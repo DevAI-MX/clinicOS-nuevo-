@@ -2,7 +2,6 @@
 
 import { cn } from "@/lib/utils";
 import {
-  formatDayShort,
   formatTime,
   isSameDay,
   layoutOverlaps,
@@ -42,6 +41,8 @@ const docColor = (id?: string | null, map?: Map<string, Doctor>) => {
   if (!id || !map) return "#c78221";
   return map.get(id)?.provider_color || "#7658a7";
 };
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 interface CalendarGridProps {
   days: Date[];
@@ -136,22 +137,40 @@ export function CalendarGrid({
   }
 
   const daysToShow = viewMode === "dia" ? [days[0]] : days;
+
+  const nowHour = now.getHours() + now.getMinutes() / 60;
+  const showNowLine =
+    daysToShow.some((d) => isSameDay(d, now)) &&
+    nowHour >= startHour &&
+    nowHour <= endHour;
+  const HEADER_HEIGHT_PX = 56;
+
   return (
     <>
-      <div className="now-line" />
+      {showNowLine && (
+        <div
+          className="now-line"
+          style={{
+            top: `calc(${HEADER_HEIGHT_PX}px + ${nowHour - startHour} * var(--hour-h))`,
+          }}
+        />
+      )}
       <div className="calendar-grid week-agenda" style={{ "--columns": daysToShow.length } as any}>
         <div className="corner">GMT-6</div>
         {daysToShow.map((day) => {
           const today = isSameDay(day, now);
-          const dayName = formatDayShort(day);
+          const weekdayShort = capitalize(
+            day.toLocaleDateString("es-MX", { weekday: "short" }).replace(/\.$/, ""),
+          );
+          const weekdayLong = capitalize(day.toLocaleDateString("es-MX", { weekday: "long" }));
           return (
             <div key={day.toISOString()} className={cn("day-head", today && "today")}>
               <div>
                 <strong>
-                  {dayName} {day.getDate()}
+                  {weekdayShort} {day.getDate()}
                 </strong>
                 <br />
-                <span>{dayName}</span>
+                <span>{weekdayLong}</span>
               </div>
               {onSelectDay && (
                 <button className="btn small" onClick={() => onSelectDay(day)}>
@@ -229,9 +248,44 @@ function DayColumn({
     })),
   );
 
+  const dayBlocks = blocks
+    .map((block) => ({
+      block,
+      segment: segmentForDay(new Date(block.starts_at), new Date(block.ends_at), day),
+    }))
+    .filter(
+      (x): x is { block: ScheduleBlock; segment: NonNullable<ReturnType<typeof segmentForDay>> } =>
+        x.segment !== null,
+    );
+
   return (
     <div className="day-col" style={{ minHeight: `calc(var(--hour-h) * ${endHour - startHour})` }}>
-      {/* Blocks can also be added here, simplified for this rewrite to just show appointments as per the redesign focus */}
+      {dayBlocks.map(({ block, segment }) => {
+        const hStart = segment.start.getHours() + segment.start.getMinutes() / 60;
+        const hEnd = segment.end.getHours() + segment.end.getMinutes() / 60;
+
+        if (hEnd <= startHour || hStart >= endHour) return null;
+
+        const topHrs = Math.max(0, hStart - startHour);
+        const durationHrs = Math.min(endHour, hEnd) - Math.max(startHour, hStart);
+
+        return (
+          <div
+            key={block.id}
+            className="schedule-block"
+            title={block.reason ?? "Horario bloqueado"}
+            style={{
+              top: `calc(${topHrs} * var(--hour-h))`,
+              height: `calc(${durationHrs} * var(--hour-h))`,
+            }}
+          >
+            <div className="name">{block.reason || "Horario bloqueado"}</div>
+            <div className="time">
+              {formatTime(segment.start)} – {formatTime(segment.end)}
+            </div>
+          </div>
+        );
+      })}
       {dayAppointments.map(({ appointment, segment }) => {
         const hStart = segment.start.getHours() + segment.start.getMinutes() / 60;
         const hEnd = segment.end.getHours() + segment.end.getMinutes() / 60;

@@ -12,23 +12,6 @@
 
 import { useMemo, useState } from "react";
 import "./calendar.css";
-import {
-  CalendarDays,
-  CalendarPlus,
-  ChevronLeft,
-  ChevronRight,
-  Lock,
-  Search,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useAgenda } from "@/components/calendario/use-agenda";
 import { KpiStrip } from "@/components/calendario/kpi-strip";
@@ -204,9 +187,6 @@ export default function CalendarioPage() {
                 <option value="deposit_pending">Anticipo pendiente</option>
                 <option value="completada">Completadas</option>
               </select>
-              <button
-                className={cn("chip", true && "active")}
-              >Horario operativo</button>
             </div>
           </section>
 
