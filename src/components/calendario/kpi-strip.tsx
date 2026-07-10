@@ -19,70 +19,35 @@ interface KpiStripProps {
 
 export function KpiStrip({ kpis, loading = false }: KpiStripProps) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <KpiCard
-        icon={<CalendarCheck className="size-4" />}
-        label="Citas de hoy"
-        value={loading ? "—" : String(kpis.todayCount)}
-      />
-      <KpiCard
-        icon={<HandCoins className="size-4" />}
-        label="Pendientes de anticipo"
-        value={loading ? "—" : String(kpis.depositPendingCount)}
-        detail={
-          !loading && kpis.depositPendingTotal > 0
+    <section className="kpis">
+      <article className="kpi">
+        <div className="label">Citas de hoy</div>
+        <div className="value">{loading ? "—" : kpis.todayCount}</div>
+        <div className="hint">Agendadas para hoy</div>
+      </article>
+      <article className="kpi">
+        <div className="label">Pendientes de anticipo</div>
+        <div className="value">{loading ? "—" : kpis.depositPendingCount}</div>
+        <div className="hint">
+          {!loading && kpis.depositPendingTotal > 0
             ? `${formatCurrency(kpis.depositPendingTotal, CLINIC_CURRENCY)} por cobrar`
-            : undefined
-        }
-        detailClassName="text-warning"
-      />
-      <KpiCard
-        icon={<CheckCircle2 className="size-4 text-success" />}
-        label="Anticipos pagados"
-        value={loading ? "—" : String(kpis.depositPaidCount)}
-        detail={
-          !loading && kpis.depositPaidTotal > 0
+            : "Prioridad comercial"}
+        </div>
+      </article>
+      <article className="kpi">
+        <div className="label">Anticipos pagados</div>
+        <div className="value">{loading ? "—" : kpis.depositPaidCount}</div>
+        <div className="hint">
+          {!loading && kpis.depositPaidTotal > 0
             ? `${formatCurrency(kpis.depositPaidTotal, CLINIC_CURRENCY)} confirmados`
-            : undefined
-        }
-        detailClassName="text-success"
-      />
-      <KpiCard
-        icon={<CalendarDays className="size-4" />}
-        label="Citas de la semana"
-        value={loading ? "—" : String(kpis.weekCount)}
-      />
-    </div>
-  );
-}
-
-function KpiCard({
-  icon,
-  label,
-  value,
-  detail,
-  detailClassName,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  detail?: string;
-  detailClassName?: string;
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-soft transition-shadow hover:shadow-lifted">
-      <div className="flex items-center gap-2 text-muted-foreground">
-        {icon}
-        <p className="text-xs font-medium">{label}</p>
-      </div>
-      <p className="nums mt-2 text-2xl font-semibold text-foreground">
-        {value}
-      </p>
-      {detail && (
-        <p className={cn("nums mt-0.5 text-xs font-medium", detailClassName)}>
-          {detail}
-        </p>
-      )}
-    </div>
+            : "Ingresos asegurados"}
+        </div>
+      </article>
+      <article className="kpi">
+        <div className="label">Citas de la semana</div>
+        <div className="value">{loading ? "—" : kpis.weekCount}</div>
+        <div className="hint">Volumen total proyectado</div>
+      </article>
+    </section>
   );
 }

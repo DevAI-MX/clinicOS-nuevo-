@@ -11,6 +11,7 @@
  */
 
 import { useMemo, useState } from "react";
+import "./calendar.css";
 import {
   CalendarDays,
   CalendarPlus,
@@ -44,7 +45,7 @@ import {
   weekDays,
 } from "@/lib/clinic/calendar";
 
-type ViewMode = "semana" | "dia";
+type ViewMode = "semana" | "dia" | "team";
 type StatusFilter = "all" | "confirmada" | "deposit_pending" | "completada";
 
 export default function CalendarioPage() {
@@ -129,178 +130,184 @@ export default function CalendarioPage() {
     view === "dia" ? formatDayLong(days[0]) : formatWeekRange(anchor);
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      {/* Encabezado */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <CalendarDays className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-foreground">
-              Calendario
-            </h1>
-            <p className="text-xs capitalize text-muted-foreground">
-              {rangeLabel}
-            </p>
-          </div>
-        </div>
+    <div className="calendar-scope">
+      <div className="app-shell">
+        <main className="main">
+          <section className="topbar">
+            <div className="title-wrap">
+              <div className="title-icon">⌁</div>
+              <div>
+                <h1>Calendario clínico</h1>
+                <p className="subtitle">{view === "team" ? "Segmentación por doctor, sala o equipo médico" : `Agenda compartida · ${rangeLabel}`}</p>
+              </div>
+            </div>
+            <div className="actions">
+              <div className="input-wrap">
+                <span>⌕</span>
+                <input
+                  className="input"
+                  placeholder="Buscar paciente, teléfono o procedimiento..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+              <button className="btn ghost" onClick={() => setBlockOpen(true)}>⏸ Bloquear horario</button>
+              <button className="btn primary" onClick={() => setNewOpen(true)}>＋ Nueva cita</button>
+            </div>
+          </section>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative hidden sm:block">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Buscar cita..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-9 w-64 pl-9 bg-background"
-            />
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setBlockOpen(true)}
-            className="gap-1.5"
-          >
-            <Lock className="h-4 w-4" />
-            <span className="hidden sm:inline">Bloquear horario</span>
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => setNewOpen(true)}
-            className="gap-1.5"
-          >
-            <CalendarPlus className="h-4 w-4" />
-            Nueva cita
-          </Button>
-        </div>
-      </div>
+          <KpiStrip kpis={kpis} loading={loading} />
 
-      {/* KPIs */}
-      <KpiStrip kpis={kpis} loading={loading} />
-
-      {/* Controles de navegación / vista */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1">
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            onClick={goPrev}
-            aria-label="Anterior"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={goToday}
-          >
-            Hoy
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            className="h-8 w-8"
-            onClick={goNext}
-            aria-label="Siguiente"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-
-        <div className="flex flex-1 items-center gap-2 overflow-x-auto px-2 scrollbar-none">
-          <div className="flex gap-1.5 rounded-lg border border-border bg-card p-1 shadow-sm">
-            {(
-              [
-                { id: "all", label: "Todos", dot: "bg-primary" },
-                { id: "confirmada", label: "Confirmadas", dot: "bg-success" },
-                { id: "deposit_pending", label: "Anticipo pendiente", dot: "bg-warning" },
-                { id: "completada", label: "Completadas", dot: "bg-muted-foreground" },
-              ] as const
-            ).map((filter) => (
-              <button
-                key={filter.id}
-                onClick={() => setStatusFilter(filter.id as StatusFilter)}
-                className={cn(
-                  "flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  statusFilter === filter.id
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <span className={cn("size-2 rounded-full", filter.dot)} />
-                {filter.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Filtro por doctor — solo si la clínica configuró doctores. */}
-          {doctors.length > 0 && (
-            <Select
-              value={doctorFilter}
-              onValueChange={(v) => v && setDoctorFilter(v as string)}
-            >
-              <SelectTrigger
-                size="sm"
-                className="h-8 w-40 border-border bg-muted text-foreground"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="border-border bg-popover">
-                <SelectItem value="all">Todos los doctores</SelectItem>
-                <SelectItem value="unassigned">Sin asignar</SelectItem>
-                {doctors.map((d) => (
-                  <SelectItem key={d.user_id} value={d.user_id}>
-                    {d.full_name || "Doctor sin nombre"}
-                  </SelectItem>
+          <section className="control-deck">
+            <div className="left-controls">
+              <button className="btn icon" onClick={goPrev}>‹</button>
+              <button className="btn small" onClick={goToday}>Hoy</button>
+              <button className="btn icon" onClick={goNext}>›</button>
+              <div className="segmented" aria-label="Vista">
+                <button className={cn("segment", view === "semana" && "active")} onClick={() => setView("semana")}>Semana</button>
+                <button className={cn("segment", view === "team" && "active")} onClick={() => setView("team")}>Equipo médico</button>
+                <button className={cn("segment", view === "dia" && "active")} onClick={() => setView("dia")}>Día</button>
+              </div>
+              <div className="doctor-strip">
+                <button
+                  className={cn("chip", doctorFilter === "all" && "active")}
+                  onClick={() => setDoctorFilter("all")}
+                >
+                  <span className="dot" style={{ background: "#0f4d4f" }}></span>Todos
+                </button>
+                {doctors.map(d => (
+                  <button
+                    key={d.user_id}
+                    className={cn("chip", doctorFilter === d.user_id && "active")}
+                    onClick={() => setDoctorFilter(d.user_id)}
+                  >
+                    <span className="dot" style={{ background: d.provider_color || "#7658a7" }}></span>{d.full_name?.split(" ")[0] || "Doctor"}
+                  </button>
                 ))}
-              </SelectContent>
-            </Select>
-          )}
+                <button
+                  className={cn("chip", doctorFilter === "unassigned" && "active")}
+                  onClick={() => setDoctorFilter("unassigned")}
+                >
+                  <span className="dot" style={{ background: "#c78221" }}></span>Sin asignar
+                </button>
+              </div>
+            </div>
+            <div className="right-controls">
+              <select
+                className="select"
+                title="Estado"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+              >
+                <option value="all">Todos los estados</option>
+                <option value="confirmada">Confirmadas</option>
+                <option value="deposit_pending">Anticipo pendiente</option>
+                <option value="completada">Completadas</option>
+              </select>
+              <button
+                className={cn("chip", true && "active")}
+              >Horario operativo</button>
+            </div>
+          </section>
 
-          {/* Control segmentado semana/día — pista gris + pastilla activa,
-              el estilo homologado del legacy (docs/legacy-clinicos/ui/segment.ts). */}
-          <div className="flex h-8 items-center gap-0.5 rounded-lg bg-muted p-[3px]">
-          {(["semana", "dia"] as const).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => setView(mode)}
-              className={cn(
-                "h-full rounded-md px-3 text-xs font-medium transition-all",
-                view === mode
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-foreground/60 hover:text-foreground",
-              )}
-            >
-              {mode === "semana" ? "Semana" : "Día"}
-            </button>
-          ))}
-          </div>
-        </div>
+          <section className="workspace">
+            <section className="calendar-card">
+              <div className="calendar-toolbar">
+                <div>
+                  <div className="range">{view === "dia" ? "Día completo" : "Semana operativa"}</div>
+                  <div className="microcopy">Mostrando 08:00–19:00 para reducir scroll vertical.</div>
+                </div>
+                <div className="legend">
+                  <span>● Confirmada</span>
+                  <span>● Anticipo pendiente</span>
+                  <span>● Sin asignar</span>
+                </div>
+              </div>
+              <div className="calendar-scroll">
+                {visibleAppointments.length === 0 && (
+                  <div className="empty show">No hay citas con estos filtros. Prueba "Todos los doctores" o limpia la búsqueda.</div>
+                )}
+                <CalendarGrid
+                  days={days}
+                  appointments={visibleAppointments}
+                  blocks={blocks}
+                  now={now}
+                  doctorsById={doctorsById}
+                  onSelectAppointment={setSelectedId}
+                  onSelectDay={(day) => {
+                    setView("dia");
+                    setAnchor(startOfDay(day));
+                  }}
+                  viewMode={view}
+                />
+              </div>
+            </section>
+
+            <aside className="side">
+              <section className="panel">
+                <div className="panel-head">
+                  <div className="panel-title">Agenda compartida</div>
+                  <button className="btn small" onClick={() => setView("team")}>Ver por equipo</button>
+                </div>
+                <div className="panel-body">
+                  {doctors.map(d => {
+                    const count = visibleAppointments.filter(a => a.doctor_id === d.user_id).length;
+                    const allCount = appointments.filter(a => a.doctor_id === d.user_id).length;
+                    return (
+                      <div key={d.user_id} className="doctor-card">
+                        <div className="avatar" style={{ background: d.provider_color || "#0f4d4f" }}>
+                          {d.full_name?.substring(0, 2).toUpperCase() || "DR"}
+                        </div>
+                        <div>
+                          <h3>{d.full_name || "Doctor"}</h3>
+                          <p>{(d as any).specialties?.[0] || "General"} · {allCount} citas semana</p>
+                        </div>
+                        <div className="load">{count}</div>
+                      </div>
+                    )
+                  })}
+                  <div className="doctor-card">
+                    <div className="avatar" style={{ background: "#c78221" }}>SA</div>
+                    <div>
+                      <h3>Sin asignar</h3>
+                      <p>Bandeja de recepción</p>
+                    </div>
+                    <div className="load">{visibleAppointments.filter(a => !a.doctor_id).length}</div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="panel smart-panel">
+                <div className="panel-head">
+                  <div className="panel-title">Acciones inteligentes</div>
+                  <button className="btn small" onClick={() => {
+                    setDoctorFilter("all");
+                    setStatusFilter("all");
+                    setSearchQuery("");
+                  }}>Limpiar</button>
+                </div>
+                <div className="panel-body">
+                  <div className="queue-item">
+                    <div className="queue-icon">↗</div>
+                    <div className="queue-copy">
+                      <strong>{appointments.filter(a => !a.doctor_id).length} citas sin doctor asignado</strong>
+                      <span>Asignarlas antes de confirmar evita huecos y dobles agendas.</span>
+                    </div>
+                  </div>
+                  <div className="queue-item">
+                    <div className="queue-icon">$</div>
+                    <div className="queue-copy">
+                      <strong>{appointments.filter(a => a.deposit_status === "pendiente").length} anticipos pendientes</strong>
+                      <span>Enviar recordatorio por WhatsApp antes de apartar horario premium.</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </aside>
+          </section>
+        </main>
       </div>
 
-      {/* Rejilla */}
-      <div className="min-h-0 flex-1 animate-fade-up overflow-hidden rounded-xl border border-border bg-card shadow-soft">
-        <CalendarGrid
-          days={days}
-          appointments={visibleAppointments}
-          blocks={blocks}
-          now={now}
-          doctorsById={doctorsById}
-          onSelectAppointment={setSelectedId}
-          onSelectDay={(day) => {
-            setView("dia");
-            setAnchor(startOfDay(day));
-          }}
-        />
-      </div>
-
-      {/* Diálogos */}
       <NewAppointmentDialog
         open={newOpen}
         onOpenChange={setNewOpen}
